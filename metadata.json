@@ -1,0 +1,6 @@
+{
+  "name": "DBeaver Web - Multi-Database Client & SQL IDE",
+  "description": "Desktop-grade database management client for PostgreSQL, MongoDB, ClickHouse, and extensible drivers with SQL editor, schema browser, ER inspector, and offline PWA support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
