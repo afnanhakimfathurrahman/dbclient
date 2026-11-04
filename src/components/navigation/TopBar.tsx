@@ -9,7 +9,8 @@ import {
   Sparkles, 
   ChevronDown, 
   HardDriveDownload,
-  Info
+  Info,
+  Menu
 } from 'lucide-react';
 import { ConnectionConfig, DriverInfo } from '../../types/db';
 import { PWAInstallButton } from '../common/PWAInstallButton';
@@ -26,6 +27,8 @@ interface TopBarProps {
   onOpenHistory: () => void;
   onOpenExport: () => void;
   onOpenAbout: () => void;
+  onToggleSidebar?: () => void;
+  sidebarOpen?: boolean;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -39,6 +42,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenHistory,
   onOpenExport,
   onOpenAbout,
+  onToggleSidebar,
+  sidebarOpen,
 }) => {
   const isOnline = useOnlineStatus();
   const installedCount = drivers.filter(d => d.isInstalled).length;
@@ -46,7 +51,19 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <header className="h-12 bg-slate-950 border-b border-slate-800 px-3 flex items-center justify-between text-xs select-none shrink-0 z-20">
       {/* Brand & Connection Dropdown */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3">
+        {/* Mobile Sidebar Toggle Button */}
+        {onToggleSidebar && (
+          <button
+            onClick={onToggleSidebar}
+            className="md:hidden p-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition"
+            title="Toggle Navigator Menu"
+            aria-label="Toggle Navigator Menu"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
+        )}
+
         {/* App Logo */}
         <div className="flex items-center gap-2 cursor-pointer hover:opacity-90 transition">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-sky-600 via-sky-500 to-amber-400 flex items-center justify-center shadow-xs">

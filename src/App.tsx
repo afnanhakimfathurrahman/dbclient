@@ -41,8 +41,10 @@ export default function App() {
   const [tabs, setTabs] = useState<EditorTab[]>(() => StorageService.getSavedTabs());
   const [activeTabId, setActiveTabId] = useState<string>(() => StorageService.getActiveTabId());
 
-  // Sidebar visibility
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Sidebar visibility (responsive: starts collapsed on mobile)
+  const [sidebarOpen, setSidebarOpen] = useState(() => 
+    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
+  );
 
   // Modals
   const [isConnectionModalOpen, setIsConnectionModalOpen] = useState(false);
@@ -121,6 +123,10 @@ export default function App() {
       setTabs([...tabs, newTab]);
       setActiveTabId(newTab.id);
     }
+    // Auto close sidebar on mobile devices
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
   };
 
   // Helper: Open new SQL Query tab
@@ -136,6 +142,10 @@ export default function App() {
     };
     setTabs([...tabs, newTab]);
     setActiveTabId(newTab.id);
+    // Auto close sidebar on mobile devices
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
   };
 
   const handleCloseTab = (tabId: string) => {
@@ -272,15 +282,28 @@ export default function App() {
         onOpenHistory={() => setIsHistoryModalOpen(true)}
         onOpenExport={() => setIsExportModalOpen(true)}
         onOpenAbout={() => setIsAboutModalOpen(true)}
+        onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+        sidebarOpen={sidebarOpen}
       />
 
       {/* 2. MAIN APPLICATION WORKSPACE */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar: Database Navigator */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Mobile Backdrop Overlay */}
+        {sidebarOpen && (
+          <div
+            onClick={() => setSidebarOpen(false)}
+            className="fixed inset-0 top-12 bg-black/60 backdrop-blur-xs z-30 md:hidden animate-in fade-in duration-150"
+            aria-hidden="true"
+          />
+        )}
+
+        {/* Left Sidebar: Database Navigator (Responsive Drawer on Mobile, Split Pane on Desktop) */}
         <aside
           className={`${
-            sidebarOpen ? 'w-72 sm:w-80' : 'w-0'
-          } shrink-0 transition-all duration-200 ease-in-out relative flex flex-col z-10`}
+            sidebarOpen 
+              ? 'translate-x-0 w-72 md:w-80' 
+              : '-translate-x-full md:translate-x-0 md:w-0'
+          } fixed top-12 bottom-0 left-0 z-40 md:relative md:top-auto md:bottom-auto shrink-0 transition-all duration-200 ease-in-out flex flex-col shadow-2xl md:shadow-none bg-slate-900 border-r border-slate-800`}
         >
           {sidebarOpen && (
             <DatabaseNavigator
@@ -304,10 +327,10 @@ export default function App() {
           )}
         </aside>
 
-        {/* Sidebar Toggle Handle */}
+        {/* Desktop Sidebar Toggle Handle */}
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="w-4 h-8 self-center -ml-2 z-20 rounded-r bg-slate-800 hover:bg-slate-700 border border-slate-700/80 flex items-center justify-center text-slate-400 hover:text-white transition shadow-md"
+          className="hidden md:flex w-4 h-8 self-center -ml-2 z-20 rounded-r bg-slate-800 hover:bg-slate-700 border border-slate-700/80 items-center justify-center text-slate-400 hover:text-white transition shadow-md"
           title={sidebarOpen ? 'Collapse Database Navigator' : 'Expand Database Navigator'}
         >
           {sidebarOpen ? (
