@@ -99,7 +99,7 @@ class PostgresDriver implements DatabaseDriver {
           FROM pg_class c
           JOIN pg_namespace n ON n.oid = c.relnamespace
           WHERE n.nspname = @schema:text
-            AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+            AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
             AND NOT c.relispartition
           ORDER BY c.relname
         '''),
@@ -111,15 +111,191 @@ class PostgresDriver implements DatabaseDriver {
         DbObject(
           schema: schema,
           name: row[0] as String,
-          kind: switch (row[1] as String) {
-            'p' => DbObjectKind.partitionedTable,
-            'v' => DbObjectKind.view,
-            'm' => DbObjectKind.materializedView,
-            'f' => DbObjectKind.foreignTable,
-            _ => DbObjectKind.table,
-          },
+          kind: _kindOf(row[1] as String),
         ),
     ];
+  }
+
+  static DbObjectKind _kindOf(String relkind) => switch (relkind) {
+    'p' => DbObjectKind.partitionedTable,
+    'v' => DbObjectKind.view,
+    'm' => DbObjectKind.materializedView,
+    'f' => DbObjectKind.foreignTable,
+    'S' => DbObjectKind.sequence,
+    _ => DbObjectKind.table,
+  };
+
+  /// SQL expression resolving @schema/@object to the relation's oid.
+  static const _relation =
+      "(quote_ident(@schema:text) || '.' || quote_ident(@object:text))::regclass";
+
+  Future<pg.Result> _metaQuery(String sql, String schema, String object) {
+    return _guard(
+      () => _metaConn.execute(
+        pg.Sql.named(sql),
+        parameters: {'schema': schema, 'object': object},
+      ),
+    );
+  }
+
+  @override
+  Future<List<IndexInfo>> listIndexes(String schema, String object) async {
+    final result = await _metaQuery(
+      '''
+      SELECT ic.relname, pg_get_indexdef(i.indexrelid), i.indisunique,
+             i.indisprimary, pg_size_pretty(pg_relation_size(i.indexrelid))
+      FROM pg_index i
+      JOIN pg_class ic ON ic.oid = i.indexrelid
+      WHERE i.indrelid = $_relation
+      ORDER BY i.indisprimary DESC, ic.relname
+      ''',
+      schema,
+      object,
+    );
+    return [
+      for (final row in result)
+        IndexInfo(
+          name: row[0] as String,
+          definition: row[1] as String,
+          isUnique: row[2] as bool,
+          isPrimary: row[3] as bool,
+          size: row[4] as String?,
+        ),
+    ];
+  }
+
+  @override
+  Future<List<ConstraintInfo>> listConstraints(
+    String schema,
+    String object,
+  ) async {
+    // Not-null constraints (contype 'n', Postgres 18+) are shown on columns.
+    final result = await _metaQuery(
+      '''
+      SELECT con.conname, con.contype::text, pg_get_constraintdef(con.oid),
+             CASE WHEN con.contype = 'f' THEN con.confrelid::regclass::text END
+      FROM pg_constraint con
+      WHERE con.conrelid = $_relation
+        AND con.contype IN ('p', 'u', 'c', 'f', 'x')
+      ORDER BY position(con.contype::text IN 'pufcx'), con.conname
+      ''',
+      schema,
+      object,
+    );
+    return [
+      for (final row in result)
+        ConstraintInfo(
+          name: row[0] as String,
+          kind: switch (row[1] as String) {
+            'p' => ConstraintKind.primaryKey,
+            'u' => ConstraintKind.unique,
+            'f' => ConstraintKind.foreignKey,
+            'x' => ConstraintKind.exclusion,
+            _ => ConstraintKind.check,
+          },
+          definition: row[2] as String,
+          referencedTable: row[3] as String?,
+        ),
+    ];
+  }
+
+  @override
+  Future<List<TriggerInfo>> listTriggers(String schema, String object) async {
+    final result = await _metaQuery(
+      '''
+      SELECT t.tgname, pg_get_triggerdef(t.oid, true), t.tgenabled <> 'D'
+      FROM pg_trigger t
+      WHERE t.tgrelid = $_relation AND NOT t.tgisinternal
+      ORDER BY t.tgname
+      ''',
+      schema,
+      object,
+    );
+    return [
+      for (final row in result)
+        TriggerInfo(
+          name: row[0] as String,
+          definition: row[1] as String,
+          enabled: row[2] as bool,
+        ),
+    ];
+  }
+
+  @override
+  Future<List<PartitionInfo>> listPartitions(
+    String schema,
+    String object,
+  ) async {
+    final result = await _metaQuery(
+      '''
+      SELECT n.nspname, c.relname, c.relkind::text,
+             coalesce(pg_get_expr(c.relpartbound, c.oid), '')
+      FROM pg_inherits inh
+      JOIN pg_class c ON c.oid = inh.inhrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE inh.inhparent = $_relation
+      ORDER BY c.relname
+      ''',
+      schema,
+      object,
+    );
+    return [
+      for (final row in result)
+        PartitionInfo(
+          object: DbObject(
+            schema: row[0] as String,
+            name: row[1] as String,
+            kind: _kindOf(row[2] as String),
+          ),
+          bound: row[3] as String,
+        ),
+    ];
+  }
+
+  @override
+  Future<List<RoutineInfo>> listRoutines(String schema) async {
+    // Hides functions that belong to extensions (e.g. pgcrypto), like
+    // DBeaver does by default.
+    final result = await _guard(
+      () => _metaConn.execute(
+        pg.Sql.named('''
+          SELECT p.oid::int8, p.proname,
+                 pg_get_function_identity_arguments(p.oid),
+                 p.prokind::text,
+                 CASE WHEN p.prokind = 'f' THEN pg_get_function_result(p.oid) END
+          FROM pg_proc p
+          JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = @schema:text
+            AND p.prokind IN ('f', 'p')
+            AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid
+                AND d.deptype = 'e'
+            )
+          ORDER BY p.proname, 3
+        '''),
+        parameters: {'schema': schema},
+      ),
+    );
+    return [
+      for (final row in result)
+        RoutineInfo(
+          id: row[0] as int,
+          name: row[1] as String,
+          arguments: row[2] as String,
+          kind: row[3] == 'p' ? RoutineKind.procedure : RoutineKind.function,
+          returnType: row[4] as String?,
+        ),
+    ];
+  }
+
+  @override
+  Future<String> routineDefinition(RoutineInfo routine) async {
+    // The id comes from pg_proc, so inlining it is safe.
+    final result = await _guard(
+      () => _metaConn.execute('SELECT pg_get_functiondef(${routine.id}::oid)'),
+    );
+    return result.first.first as String;
   }
 
   @override
@@ -138,7 +314,7 @@ class PostgresDriver implements DatabaseDriver {
                  )
           FROM pg_attribute a
           LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-          WHERE a.attrelid = (quote_ident(@schema:text) || '.' || quote_ident(@object:text))::regclass
+          WHERE a.attrelid = $_relation
             AND a.attnum > 0 AND NOT a.attisdropped
           ORDER BY a.attnum
         '''),

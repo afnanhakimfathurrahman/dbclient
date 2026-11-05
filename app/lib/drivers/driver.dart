@@ -85,11 +85,107 @@ enum DbObjectKind {
   partitionedTable('Partitioned table'),
   view('View'),
   materializedView('Materialized view'),
-  foreignTable('Foreign table');
+  foreignTable('Foreign table'),
+  sequence('Sequence');
 
   const DbObjectKind(this.label);
 
   final String label;
+
+  bool get isTable => this == table || this == partitionedTable;
+}
+
+class IndexInfo {
+  const IndexInfo({
+    required this.name,
+    required this.definition,
+    required this.isUnique,
+    required this.isPrimary,
+    this.size,
+  });
+
+  final String name;
+
+  /// Full `CREATE INDEX` statement.
+  final String definition;
+  final bool isUnique;
+  final bool isPrimary;
+
+  /// Human-readable on-disk size, e.g. "16 kB".
+  final String? size;
+}
+
+enum ConstraintKind {
+  primaryKey('Primary key'),
+  unique('Unique'),
+  check('Check'),
+  foreignKey('Foreign key'),
+  exclusion('Exclusion');
+
+  const ConstraintKind(this.label);
+
+  final String label;
+}
+
+class ConstraintInfo {
+  const ConstraintInfo({
+    required this.name,
+    required this.kind,
+    required this.definition,
+    this.referencedTable,
+  });
+
+  final String name;
+  final ConstraintKind kind;
+
+  /// Constraint body, e.g. `PRIMARY KEY (id)` or `CHECK (qty > 0)`.
+  final String definition;
+
+  /// For foreign keys, the referenced table (schema-qualified if needed).
+  final String? referencedTable;
+}
+
+class TriggerInfo {
+  const TriggerInfo({
+    required this.name,
+    required this.definition,
+    required this.enabled,
+  });
+
+  final String name;
+
+  /// Full `CREATE TRIGGER` statement.
+  final String definition;
+  final bool enabled;
+}
+
+class PartitionInfo {
+  const PartitionInfo({required this.object, required this.bound});
+
+  /// The partition itself; may be partitioned again (sub-partitions).
+  final DbObject object;
+
+  /// Partition bound, e.g. `FOR VALUES FROM ('2024-01-01') TO ('2024-04-01')`.
+  final String bound;
+}
+
+enum RoutineKind { function, procedure }
+
+class RoutineInfo {
+  const RoutineInfo({
+    required this.id,
+    required this.name,
+    required this.arguments,
+    required this.kind,
+    this.returnType,
+  });
+
+  /// Engine-specific identifier used to fetch the definition.
+  final int id;
+  final String name;
+  final String arguments;
+  final RoutineKind kind;
+  final String? returnType;
 }
 
 class DbObject {
@@ -184,6 +280,16 @@ abstract class DatabaseDriver {
   Future<List<String>> listSchemas();
   Future<List<DbObject>> listObjects(String schema);
   Future<List<ColumnInfo>> listColumns(String schema, String object);
+  Future<List<IndexInfo>> listIndexes(String schema, String object);
+
+  /// All constraints including foreign keys.
+  Future<List<ConstraintInfo>> listConstraints(String schema, String object);
+  Future<List<TriggerInfo>> listTriggers(String schema, String object);
+  Future<List<PartitionInfo>> listPartitions(String schema, String object);
+  Future<List<RoutineInfo>> listRoutines(String schema);
+
+  /// Full `CREATE` statement for a routine from [listRoutines].
+  Future<String> routineDefinition(RoutineInfo routine);
 
   /// Runs a single statement. At most [maxRows] rows are kept; when the limit
   /// is hit the statement is cancelled on the server and the result is
