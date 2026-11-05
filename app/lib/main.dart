@@ -23,14 +23,12 @@ class DbClientApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final themeMode = ref.watch(themeModeProvider);
+    final preset = ref.watch(appThemeProvider);
 
     return MaterialApp(
       title: 'DB Client',
       debugShowCheckedModeBanner: false,
-      theme: buildTheme(Brightness.light),
-      darkTheme: buildTheme(Brightness.dark),
-      themeMode: themeMode,
+      theme: buildThemeForPreset(preset),
       home: const HomePage(),
     );
   }

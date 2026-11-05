@@ -1,8 +1,8 @@
-import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show FutureProviderFamily;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../app/theme.dart';
 import '../data/app_database.dart';
 import '../data/repositories.dart';
 import '../data/secret_store.dart';
@@ -173,24 +173,26 @@ final sharedPreferencesProvider = Provider<SharedPreferences>(
   (ref) => throw UnimplementedError('override in main()'),
 );
 
-class ThemeModeNotifier extends Notifier<ThemeMode> {
-  static const _key = 'themeMode';
+class AppThemeNotifier extends Notifier<AppThemePreset> {
+  static const _key = 'themePreset';
 
   @override
-  ThemeMode build() {
-    final saved = ref.watch(sharedPreferencesProvider).getString(_key);
-    return ThemeMode.values.asNameMap()[saved] ?? ThemeMode.dark;
+  AppThemePreset build() {
+    final prefs = ref.watch(sharedPreferencesProvider);
+    final saved = AppThemePreset.values.asNameMap()[prefs.getString(_key)];
+    if (saved != null) return saved;
+    // Earlier builds stored only light/dark.
+    return prefs.getString('themeMode') == 'light'
+        ? AppThemePreset.vsCodeLight
+        : AppThemePreset.vsCodeDark;
   }
 
-  void toggle() {
-    setMode(state == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark);
-  }
-
-  void setMode(ThemeMode mode) {
-    state = mode;
-    ref.read(sharedPreferencesProvider).setString(_key, mode.name);
+  void select(AppThemePreset preset) {
+    state = preset;
+    ref.read(sharedPreferencesProvider).setString(_key, preset.name);
   }
 }
 
-final themeModeProvider =
-    NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
+final appThemeProvider = NotifierProvider<AppThemeNotifier, AppThemePreset>(
+  AppThemeNotifier.new,
+);
