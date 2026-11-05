@@ -8,10 +8,11 @@ import 'package:re_highlight/styles/atom-one-light.dart';
 
 import '../../app/theme.dart';
 import '../../drivers/driver.dart';
-import '../../state/editor_tabs.dart';
+import '../../state/workspace_tabs.dart';
 import '../../state/providers.dart';
 import '../connections/connection_dialog.dart';
 import '../history/history_dialog.dart';
+import '../inspector/inspector_view.dart';
 import '../results/results_view.dart';
 
 /// Editor tabs plus the active tab's editor and results.
@@ -20,7 +21,7 @@ class Workspace extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(editorTabsProvider);
+    final state = ref.watch(workspaceTabsProvider);
     final active = state.active;
     if (active == null) return const _EmptyWorkspace();
 
@@ -30,7 +31,13 @@ class Workspace extends ConsumerWidget {
         _TabStrip(state: state),
         const Divider(),
         Expanded(
-          child: EditorView(key: ValueKey(active.id), tab: active),
+          child: switch (active) {
+            EditorTab() => EditorView(key: ValueKey(active.id), tab: active),
+            InspectorTab() => InspectorView(
+              key: ValueKey(active.id),
+              tab: active,
+            ),
+          },
         ),
       ],
     );
@@ -40,12 +47,12 @@ class Workspace extends ConsumerWidget {
 class _TabStrip extends ConsumerWidget {
   const _TabStrip({required this.state});
 
-  final EditorTabsState state;
+  final WorkspaceTabsState state;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final connections = ref.watch(connectionsProvider).value ?? const [];
-    final notifier = ref.read(editorTabsProvider.notifier);
+    final notifier = ref.read(workspaceTabsProvider.notifier);
 
     return SizedBox(
       height: 36,
@@ -93,7 +100,7 @@ class _TabChip extends StatelessWidget {
     required this.onClose,
   });
 
-  final EditorTab tab;
+  final WorkspaceTab tab;
   final bool active;
   final Color? color;
   final VoidCallback onTap;
@@ -126,12 +133,18 @@ class _TabChip extends StatelessWidget {
               children: [
                 ListenableBuilder(
                   listenable: tab,
-                  builder: (_, _) => tab.running
+                  builder: (_, _) => tab.busy
                       ? const SizedBox.square(
                           dimension: 10,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : Icon(Icons.code, size: 14, color: color),
+                      : Icon(
+                          tab is InspectorTab
+                              ? Icons.table_chart_outlined
+                              : Icons.code,
+                          size: 14,
+                          color: color,
+                        ),
                 ),
                 const SizedBox(width: 6),
                 Text(tab.title),
@@ -232,7 +245,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
     );
     if (sql != null) {
       ref
-          .read(editorTabsProvider.notifier)
+          .read(workspaceTabsProvider.notifier)
           .open(tab.connectionId, initialText: sql);
     }
   }
@@ -293,7 +306,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
                   ),
                   SizedBox(
                     height: editorHeight,
-                    child: _SqlEditor(tab: tab),
+                    child: SqlEditor(controller: tab.controller),
                   ),
                   MouseRegion(
                     cursor: SystemMouseCursors.resizeRow,
@@ -428,18 +441,22 @@ class _SqlEditorShortcuts extends DefaultCodeShortcutsActivatorsBuilder {
   }
 }
 
-class _SqlEditor extends StatelessWidget {
-  const _SqlEditor({required this.tab});
+/// SQL code editor with Postgres highlighting. Also used read-only for DDL.
+class SqlEditor extends StatelessWidget {
+  const SqlEditor({super.key, required this.controller, this.readOnly = false});
 
-  final EditorTab tab;
+  final CodeLineEditingController controller;
+  final bool readOnly;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final dark = theme.brightness == Brightness.dark;
     return CodeEditor(
-      controller: tab.controller,
-      autofocus: true,
+      controller: controller,
+      autofocus: !readOnly,
+      readOnly: readOnly,
+      showCursorWhenReadOnly: false,
       wordWrap: false,
       shortcutsActivatorsBuilder: const _SqlEditorShortcuts(),
       style: CodeEditorStyle(

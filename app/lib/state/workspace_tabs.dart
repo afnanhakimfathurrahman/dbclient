@@ -16,26 +16,104 @@ class StatementOutcome {
   final DriverException? error;
 }
 
+/// A tab in the workspace: a SQL editor or an object inspector.
+sealed class WorkspaceTab extends ChangeNotifier {
+  final String id = const Uuid().v4();
+
+  String get title;
+  String get connectionId;
+
+  /// Shows a spinner on the tab while true.
+  bool get busy;
+
+  Future<void> cancel() async {}
+
+  bool _disposed = false;
+
+  // Async work can finish after its tab was closed; drop those updates.
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+}
+
+/// Inspector for one table, view, materialized view or sequence. Caches the
+/// data preview so switching tabs doesn't re-query.
+class InspectorTab extends WorkspaceTab {
+  InspectorTab({required this.connectionId, required this.object});
+
+  @override
+  final String connectionId;
+  final DbObject object;
+
+  static const previewRows = 200;
+
+  @override
+  String get title => object.name;
+
+  QueryResult? _preview;
+  QueryResult? get preview => _preview;
+
+  DriverException? _previewError;
+  DriverException? get previewError => _previewError;
+
+  bool _loading = false;
+  @override
+  bool get busy => _loading;
+
+  bool get previewLoaded => _preview != null || _previewError != null;
+
+  Future<void> loadPreview(DatabaseDriver driver, String sql) async {
+    if (_loading) return;
+    _loading = true;
+    _previewError = null;
+    notifyListeners();
+    try {
+      _preview = await driver.execute(sql, maxRows: previewRows);
+    } on DriverException catch (e) {
+      _previewError = e;
+    } finally {
+      _loading = false;
+      notifyListeners();
+    }
+  }
+
+  bool shows(String connectionId, DbObject other) =>
+      this.connectionId == connectionId &&
+      object.schema == other.schema &&
+      object.name == other.name;
+}
+
 /// One SQL editor tab: its text, the connection it targets and the results
 /// of the last run.
-class EditorTab extends ChangeNotifier {
+class EditorTab extends WorkspaceTab {
   EditorTab({
     required this.title,
     required this._connectionId,
     String initialText = '',
   }) : controller = CodeLineEditingController.fromText(initialText);
 
-  final String id = const Uuid().v4();
+  @override
   final String title;
   final CodeLineEditingController controller;
 
   String _connectionId;
+  @override
   String get connectionId => _connectionId;
   set connectionId(String value) {
     if (value == _connectionId) return;
     _connectionId = value;
     notifyListeners();
   }
+
+  @override
+  bool get busy => _running;
 
   bool _running = false;
   bool get running => _running;
@@ -127,6 +205,7 @@ class EditorTab extends ChangeNotifier {
     }
   }
 
+  @override
   Future<void> cancel() async {
     await _runningOn?.cancel();
   }
@@ -141,29 +220,20 @@ class EditorTab extends ChangeNotifier {
     return offset + position.offset;
   }
 
-  bool _disposed = false;
-
-  // A run can finish after its tab was closed; drop those updates.
-  @override
-  void notifyListeners() {
-    if (!_disposed) super.notifyListeners();
-  }
-
   @override
   void dispose() {
-    _disposed = true;
     controller.dispose();
     super.dispose();
   }
 }
 
-class EditorTabsState {
-  const EditorTabsState({this.tabs = const [], this.activeId});
+class WorkspaceTabsState {
+  const WorkspaceTabsState({this.tabs = const [], this.activeId});
 
-  final List<EditorTab> tabs;
+  final List<WorkspaceTab> tabs;
   final String? activeId;
 
-  EditorTab? get active {
+  WorkspaceTab? get active {
     for (final tab in tabs) {
       if (tab.id == activeId) return tab;
     }
@@ -171,17 +241,17 @@ class EditorTabsState {
   }
 }
 
-class EditorTabsNotifier extends Notifier<EditorTabsState> {
+class WorkspaceTabsNotifier extends Notifier<WorkspaceTabsState> {
   int _counter = 0;
 
   @override
-  EditorTabsState build() {
+  WorkspaceTabsState build() {
     ref.onDispose(() {
       for (final tab in state.tabs) {
         tab.dispose();
       }
     });
-    return const EditorTabsState();
+    return const WorkspaceTabsState();
   }
 
   EditorTab open(String connectionId, {String initialText = ''}) {
@@ -191,12 +261,24 @@ class EditorTabsNotifier extends Notifier<EditorTabsState> {
       connectionId: connectionId,
       initialText: initialText,
     );
-    state = EditorTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
+    state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
     return tab;
   }
 
+  /// Opens an inspector for [object], or switches to it if already open.
+  void openInspector(String connectionId, DbObject object) {
+    for (final tab in state.tabs) {
+      if (tab is InspectorTab && tab.shows(connectionId, object)) {
+        activate(tab.id);
+        return;
+      }
+    }
+    final tab = InspectorTab(connectionId: connectionId, object: object);
+    state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
+  }
+
   void activate(String id) {
-    state = EditorTabsState(tabs: state.tabs, activeId: id);
+    state = WorkspaceTabsState(tabs: state.tabs, activeId: id);
   }
 
   void close(String id) {
@@ -210,7 +292,7 @@ class EditorTabsNotifier extends Notifier<EditorTabsState> {
           ? null
           : remaining[(index - 1).clamp(0, remaining.length - 1)].id;
     }
-    state = EditorTabsState(tabs: remaining, activeId: activeId);
+    state = WorkspaceTabsState(tabs: remaining, activeId: activeId);
     tab.cancel();
     tab.dispose();
   }
@@ -223,7 +305,7 @@ class EditorTabsNotifier extends Notifier<EditorTabsState> {
   }
 }
 
-final editorTabsProvider =
-    NotifierProvider<EditorTabsNotifier, EditorTabsState>(
-      EditorTabsNotifier.new,
+final workspaceTabsProvider =
+    NotifierProvider<WorkspaceTabsNotifier, WorkspaceTabsState>(
+      WorkspaceTabsNotifier.new,
     );

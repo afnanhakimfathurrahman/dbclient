@@ -12,6 +12,7 @@ import 'dart:io';
 
 import 'package:db_client/drivers/driver.dart';
 import 'package:db_client/drivers/postgres/postgres_driver.dart';
+import 'package:db_client/drivers/postgres/postgres_sql.dart';
 import 'package:db_client/drivers/value_format.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -106,6 +107,26 @@ void main() {
         isTrue,
         reason: 'expected some table with a constraint',
       );
+    }
+  }, skip: skip);
+
+  test('DDL for every kind of object', () async {
+    final schema = env['PG_TEST_SCHEMA'] ?? (await driver.listSchemas()).first;
+    final objects = await driver.listObjects(schema);
+    // A few of each kind, so every DDL branch is exercised when present.
+    final sample = [
+      for (final kind in DbObjectKind.values)
+        ...objects.where((o) => o.kind == kind).take(5),
+    ];
+    for (final object in sample) {
+      final ddl = await driver.ddl(schema, object.name);
+      expect(ddl, startsWith('CREATE'), reason: object.name);
+      if (object.kind.isTable) {
+        final columns = await driver.listColumns(schema, object.name);
+        for (final c in columns) {
+          expect(ddl, contains(quoteIdent(c.name)), reason: object.name);
+        }
+      }
     }
   }, skip: skip);
 

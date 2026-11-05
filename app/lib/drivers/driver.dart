@@ -291,6 +291,10 @@ abstract class DatabaseDriver {
   /// Full `CREATE` statement for a routine from [listRoutines].
   Future<String> routineDefinition(RoutineInfo routine);
 
+  /// `CREATE` statement(s) for a table, view, materialized view or sequence,
+  /// including its comments, indexes and triggers.
+  Future<String> ddl(String schema, String object);
+
   /// Runs a single statement. At most [maxRows] rows are kept; when the limit
   /// is hit the statement is cancelled on the server and the result is
   /// marked [QueryResult.truncated].

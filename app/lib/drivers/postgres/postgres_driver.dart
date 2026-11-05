@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:postgres/postgres.dart' as pg;
 
 import '../driver.dart';
+import 'postgres_sql.dart';
 
 /// PostgreSQL driver built on `package:postgres`.
 ///
@@ -296,6 +297,114 @@ class PostgresDriver implements DatabaseDriver {
       () => _metaConn.execute('SELECT pg_get_functiondef(${routine.id}::oid)'),
     );
     return result.first.first as String;
+  }
+
+  @override
+  Future<String> ddl(String schema, String object) async {
+    final info = (await _metaQuery(
+      '''
+      SELECT c.oid::int8, c.relkind::text,
+             obj_description(c.oid, 'pg_class'),
+             CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END,
+             CASE WHEN c.relispartition THEN (
+               SELECT inhparent::regclass::text FROM pg_inherits
+               WHERE inhrelid = c.oid
+             ) END,
+             CASE WHEN c.relispartition
+                  THEN pg_get_expr(c.relpartbound, c.oid) END,
+             CASE WHEN c.relkind IN ('v', 'm')
+                  THEN pg_get_viewdef(c.oid, true) END,
+             (SELECT s.srvname FROM pg_foreign_table ft
+              JOIN pg_foreign_server s ON s.oid = ft.ftserver
+              WHERE ft.ftrelid = c.oid)
+      FROM pg_class c
+      WHERE c.oid = $_relation
+      ''',
+      schema,
+      object,
+    )).first;
+    final oid = info[0] as int;
+    final kind = info[1] as String;
+    final comment = info[2] as String?;
+
+    if (kind == 'S') {
+      // The oid comes from pg_class, so inlining it is safe.
+      final seq = (await _guard(
+        () => _metaConn.execute(
+          'SELECT format_type(seqtypid, NULL), seqstart, seqincrement, '
+          'seqmin, seqmax, seqcache, seqcycle '
+          'FROM pg_sequence WHERE seqrelid = $oid',
+        ),
+      )).first;
+      return buildPgSequenceDdl(
+        schema: schema,
+        name: object,
+        type: seq[0] as String,
+        start: seq[1] as int,
+        increment: seq[2] as int,
+        min: seq[3] as int,
+        max: seq[4] as int,
+        cache: seq[5] as int,
+        cycle: seq[6] as bool,
+      );
+    }
+
+    final indexes = await listIndexes(schema, object);
+    if (kind == 'v' || kind == 'm') {
+      return buildPgViewDdl(
+        schema: schema,
+        name: object,
+        definition: info[6] as String,
+        materialized: kind == 'm',
+        indexes: indexes,
+        comment: comment,
+      );
+    }
+
+    final columns = await _metaQuery(
+      '''
+      SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull,
+             pg_get_expr(d.adbin, d.adrelid), a.attidentity::text,
+             a.attgenerated::text, col_description(a.attrelid, a.attnum)
+      FROM pg_attribute a
+      LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+      WHERE a.attrelid = $_relation AND a.attnum > 0 AND NOT a.attisdropped
+      ORDER BY a.attnum
+      ''',
+      schema,
+      object,
+    );
+    final constraints = await listConstraints(schema, object);
+    final constraintNames = {for (final c in constraints) c.name};
+    return buildPgTableDdl(
+      schema: schema,
+      name: object,
+      columns: [
+        for (final row in columns)
+          PgColumnDdl(
+            name: row[0] as String,
+            type: row[1] as String,
+            notNull: row[2] as bool,
+            defaultExpr: row[3] as String?,
+            identity: row[4] as String,
+            generated: row[5] as String,
+            comment: row[6] as String?,
+          ),
+      ],
+      constraints: constraints,
+      // Indexes backing a primary key/unique/exclusion constraint are
+      // created by the constraint itself.
+      indexes: [
+        for (final i in indexes)
+          if (!constraintNames.contains(i.name)) i,
+      ],
+      triggers: await listTriggers(schema, object),
+      partitionKey: info[3] as String?,
+      partitionOf: info[4] as String?,
+      partitionBound: info[5] as String?,
+      foreignServer: info[7] as String?,
+      comment: comment,
+    );
   }
 
   @override

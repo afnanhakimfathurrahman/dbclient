@@ -7,7 +7,7 @@ import 'package:two_dimensional_scrollables/two_dimensional_scrollables.dart';
 import '../../app/theme.dart';
 import '../../drivers/driver.dart';
 import '../../drivers/value_format.dart';
-import '../../state/editor_tabs.dart';
+import '../../state/workspace_tabs.dart';
 
 /// Results of the tab's last run: a grid for result sets, a message for
 /// other statements, or the error.
@@ -51,7 +51,7 @@ class ResultsView extends StatelessWidget {
               error: error,
             ),
             StatementOutcome(result: final result?) when result.hasResultSet =>
-              _ResultGrid(key: ObjectKey(result), result: result),
+              ResultGrid(key: ObjectKey(result), result: result),
             StatementOutcome(result: final result?) => _Placeholder(
               child: Text(
                 'Statement executed. ${result.affectedRows} row(s) affected.',
@@ -213,16 +213,17 @@ class _Placeholder extends StatelessWidget {
 }
 
 /// Virtualized result grid with a pinned header row and row-number column.
-class _ResultGrid extends StatefulWidget {
-  const _ResultGrid({super.key, required this.result});
+/// Also used by the inspector to show metadata tables.
+class ResultGrid extends StatefulWidget {
+  const ResultGrid({super.key, required this.result});
 
   final QueryResult result;
 
   @override
-  State<_ResultGrid> createState() => _ResultGridState();
+  State<ResultGrid> createState() => _ResultGridState();
 }
 
-class _ResultGridState extends State<_ResultGrid> {
+class _ResultGridState extends State<ResultGrid> {
   static const _rowHeight = 26.0;
   static const _headerHeight = 40.0;
 
@@ -464,13 +465,14 @@ class _ResultGridState extends State<_ResultGrid> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
-                  Text(
-                    info.dataType,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
+                  if (info.dataType.isNotEmpty)
+                    Text(
+                      info.dataType,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),
