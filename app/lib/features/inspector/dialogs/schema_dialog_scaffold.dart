@@ -47,7 +47,6 @@ class SchemaDialogScaffold extends StatelessWidget {
     final primaryColor = iconColor ?? scheme.primary;
 
     return Dialog(
-      backgroundColor: scheme.surfaceContainerHigh,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ConstrainedBox(
         constraints: BoxConstraints(

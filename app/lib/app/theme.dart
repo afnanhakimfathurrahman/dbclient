@@ -81,7 +81,7 @@ const ColorScheme _vsCodeDarkScheme = ColorScheme(
   surfaceContainer: Color(0xFF252526), // Panel / Card
   surfaceContainerHigh: Color(0xFF2D2D2D), // Inactive tabs / headers
   surfaceContainerHighest: Color(0xFF333333), // Popups / Modals
-  onSurfaceVariant: Color(0xFF858585), // VS Code muted text / comments
+  onSurfaceVariant: Color(0xFF9D9D9D), // VS Code description text
   outline: Color(0xFF3C3C3C), // VS Code borders
   outlineVariant: Color(0xFF2B2B2B), // Secondary borders
   shadow: Color(0xFF000000),
@@ -110,7 +110,7 @@ const ColorScheme _githubDarkScheme = ColorScheme(
   surfaceContainer: Color(0xFF21262D), // GitHub cards
   surfaceContainerHigh: Color(0xFF30363D),
   surfaceContainerHighest: Color(0xFF30363D),
-  onSurfaceVariant: Color(0xFF8B949E),
+  onSurfaceVariant: Color(0xFF9DA5AE), // GitHub fg.muted, lifted for contrast
   outline: Color(0xFF30363D),
   outlineVariant: Color(0xFF21262D),
   shadow: Color(0xFF000000),
@@ -138,8 +138,10 @@ const ColorScheme _draculaScheme = ColorScheme(
   surfaceContainerLow: Color(0xFF21222C), // Dracula dark sidebar
   surfaceContainer: Color(0xFF44475A),
   surfaceContainerHigh: Color(0xFF44475A),
-  surfaceContainerHighest: Color(0xFF6272A4),
-  onSurfaceVariant: Color(0xFF6272A4), // Dracula Comment
+  surfaceContainerHighest: Color(0xFF4A4D62),
+  // Lighter than Dracula's comment color (#6272A4), which is too dim for
+  // small UI text.
+  onSurfaceVariant: Color(0xFFBCC2DA),
   outline: Color(0xFF44475A),
   outlineVariant: Color(0xFF343746),
   shadow: Color(0xFF000000),
@@ -168,7 +170,7 @@ const ColorScheme _vsCodeLightScheme = ColorScheme(
   surfaceContainer: Color(0xFFF3F3F3),
   surfaceContainerHigh: Color(0xFFE5E5E5), // VS Code Light Inactive Tabs
   surfaceContainerHighest: Color(0xFFDDDDDD),
-  onSurfaceVariant: Color(0xFF767676),
+  onSurfaceVariant: Color(0xFF616161),
   outline: Color(0xFFCCCCCC),
   outlineVariant: Color(0xFFE5E5E5),
   shadow: Color(0x1A000000),
@@ -216,7 +218,9 @@ ThemeData buildThemeForPreset(AppThemePreset preset) {
       margin: EdgeInsets.zero,
     ),
     dialogTheme: DialogThemeData(
-      backgroundColor: scheme.surfaceContainerHighest,
+      // Raised one step in dark themes; plain white in light, so dialogs
+      // read as cards above the grey app background.
+      backgroundColor: isDark ? scheme.surfaceContainer : scheme.surface,
       elevation: 6,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
@@ -240,11 +244,11 @@ ThemeData buildThemeForPreset(AppThemePreset preset) {
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(8),
-        borderSide: BorderSide(color: scheme.outlineVariant),
+        borderSide: BorderSide(color: scheme.outline),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(8),
-        borderSide: BorderSide(color: scheme.outlineVariant),
+        borderSide: BorderSide(color: scheme.outline),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(8),
