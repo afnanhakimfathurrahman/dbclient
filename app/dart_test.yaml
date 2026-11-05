@@ -1,0 +1,3 @@
+tags:
+  # Needs a real database; see test/integration/postgres_driver_test.dart.
+  integration:
