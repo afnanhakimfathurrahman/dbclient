@@ -294,6 +294,35 @@ ThemeData buildThemeForPreset(AppThemePreset preset) {
       unselectedLabelStyle:
           const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
     ),
+    // Material's default "off" colors (surfaceContainerHighest + outline)
+    // match our dialog backgrounds, which made off switches nearly
+    // invisible. Off uses the muted text color instead, so it reads clearly
+    // on every surface.
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) {
+          return scheme.onSurface.withValues(alpha: 0.38);
+        }
+        return states.contains(WidgetState.selected)
+            ? scheme.onPrimary
+            : scheme.onSurfaceVariant;
+      }),
+      trackColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) {
+          return scheme.onSurface.withValues(alpha: 0.12);
+        }
+        return states.contains(WidgetState.selected)
+            ? scheme.primary
+            : scheme.surfaceContainerLowest;
+      }),
+      trackOutlineColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.selected)) return Colors.transparent;
+        if (states.contains(WidgetState.disabled)) {
+          return scheme.onSurface.withValues(alpha: 0.12);
+        }
+        return scheme.onSurfaceVariant;
+      }),
+    ),
     chipTheme: ChipThemeData(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
       side: BorderSide(color: scheme.outlineVariant),
