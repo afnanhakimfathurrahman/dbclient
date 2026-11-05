@@ -145,6 +145,326 @@ String buildPgSequenceDdl({
       '    ${cycle ? 'CYCLE' : 'NO CYCLE'};\n';
 }
 
+/// Generates an `ALTER TABLE ... ADD COLUMN` statement.
+String buildAddColumnSql({
+  required String schema,
+  required String table,
+  required String name,
+  required String type,
+  bool notNull = false,
+  String? defaultExpr,
+  bool isPrimaryKey = false,
+  String? comment,
+}) {
+  final target = qualifiedName(schema, table);
+  final col = quoteIdent(name);
+  final parts = ['ALTER TABLE $target ADD COLUMN $col $type'];
+  if (defaultExpr != null && defaultExpr.trim().isNotEmpty) {
+    parts.add('DEFAULT ${defaultExpr.trim()}');
+  }
+  if (notNull) {
+    parts.add('NOT NULL');
+  }
+  if (isPrimaryKey) {
+    parts.add('PRIMARY KEY');
+  }
+  final statements = ['${parts.join(' ')};'];
+  if (comment != null && comment.trim().isNotEmpty) {
+    statements.add(
+      'COMMENT ON COLUMN $target.$col IS ${quoteLiteral(comment.trim())};',
+    );
+  }
+  return statements.join('\n');
+}
+
+/// Generates an `ALTER TABLE ... DROP COLUMN` statement.
+String buildDropColumnSql({
+  required String schema,
+  required String table,
+  required String name,
+  bool cascade = false,
+}) {
+  final target = qualifiedName(schema, table);
+  final col = quoteIdent(name);
+  return 'ALTER TABLE $target DROP COLUMN $col${cascade ? ' CASCADE' : ''};';
+}
+
+/// Generates `ALTER TABLE` statements to modify a column's name, type, nullability,
+/// default expression, or comment.
+String buildAlterColumnSql({
+  required String schema,
+  required String table,
+  required String oldName,
+  String? newName,
+  String? oldType,
+  String? newType,
+  bool? oldNotNull,
+  bool? newNotNull,
+  String? oldDefault,
+  String? newDefault,
+  String? comment,
+
+  /// Conversion expression for a type change Postgres can't cast implicitly,
+  /// e.g. `amount::numeric`.
+  String? using,
+}) {
+  final target = qualifiedName(schema, table);
+  final statements = <String>[];
+  var currentName = oldName;
+
+  if (newName != null && newName.isNotEmpty && newName != oldName) {
+    statements.add(
+      'ALTER TABLE $target RENAME COLUMN ${quoteIdent(oldName)} TO ${quoteIdent(newName)};',
+    );
+    currentName = newName;
+  }
+
+  final col = quoteIdent(currentName);
+
+  if (newType != null &&
+      newType.isNotEmpty &&
+      (oldType == null || newType != oldType)) {
+    final usingClause = (using != null && using.trim().isNotEmpty)
+        ? ' USING ${using.trim()}'
+        : '';
+    statements.add(
+      'ALTER TABLE $target ALTER COLUMN $col TYPE $newType$usingClause;',
+    );
+  }
+
+  if (newNotNull != null && (oldNotNull == null || newNotNull != oldNotNull)) {
+    statements.add(
+      'ALTER TABLE $target ALTER COLUMN $col ${newNotNull ? 'SET NOT NULL' : 'DROP NOT NULL'};',
+    );
+  }
+
+  if (newDefault != oldDefault) {
+    if (newDefault != null && newDefault.trim().isNotEmpty) {
+      statements.add(
+        'ALTER TABLE $target ALTER COLUMN $col SET DEFAULT ${newDefault.trim()};',
+      );
+    } else if (oldDefault != null && oldDefault.trim().isNotEmpty) {
+      statements.add('ALTER TABLE $target ALTER COLUMN $col DROP DEFAULT;');
+    }
+  }
+
+  if (comment != null) {
+    statements.add(
+      comment.trim().isEmpty
+          ? 'COMMENT ON COLUMN $target.$col IS NULL;'
+          : 'COMMENT ON COLUMN $target.$col IS ${quoteLiteral(comment.trim())};',
+    );
+  }
+
+  return statements.join('\n');
+}
+
+/// Generates an `ALTER TABLE ... ADD CONSTRAINT` statement.
+String buildAddConstraintSql({
+  required String schema,
+  required String table,
+  String? name,
+  required ConstraintKind kind,
+  List<String> columns = const [],
+  String? expression,
+  String? referencedSchema,
+  String? referencedTable,
+  List<String> referencedColumns = const [],
+  String? onDelete,
+  String? onUpdate,
+}) {
+  final target = qualifiedName(schema, table);
+  final nameClause = (name != null && name.trim().isNotEmpty)
+      ? 'CONSTRAINT ${quoteIdent(name.trim())} '
+      : '';
+
+  final String body;
+  switch (kind) {
+    case ConstraintKind.primaryKey:
+      final cols = columns.map(quoteIdent).join(', ');
+      body = 'PRIMARY KEY ($cols)';
+    case ConstraintKind.unique:
+      final cols = columns.map(quoteIdent).join(', ');
+      body = 'UNIQUE ($cols)';
+    case ConstraintKind.check:
+      final expr = expression?.trim() ?? '';
+      body = 'CHECK ($expr)';
+    case ConstraintKind.foreignKey:
+      final cols = columns.map(quoteIdent).join(', ');
+      final refTarget = qualifiedName(
+        referencedSchema != null && referencedSchema.isNotEmpty
+            ? referencedSchema
+            : schema,
+        referencedTable ?? '',
+      );
+      // Without columns, the referenced table's primary key is used.
+      final refCols = referencedColumns.isEmpty
+          ? ''
+          : ' (${referencedColumns.map(quoteIdent).join(', ')})';
+      final onDelClause = (onDelete != null &&
+              onDelete.isNotEmpty &&
+              onDelete.toUpperCase() != 'NO ACTION')
+          ? ' ON DELETE $onDelete'
+          : '';
+      final onUpdClause = (onUpdate != null &&
+              onUpdate.isNotEmpty &&
+              onUpdate.toUpperCase() != 'NO ACTION')
+          ? ' ON UPDATE $onUpdate'
+          : '';
+      body =
+          'FOREIGN KEY ($cols) REFERENCES $refTarget$refCols$onDelClause$onUpdClause';
+    case ConstraintKind.exclusion:
+      body = 'EXCLUDE (${expression ?? ''})';
+  }
+
+  return 'ALTER TABLE $target ADD $nameClause$body;';
+}
+
+/// Generates an `ALTER TABLE ... DROP CONSTRAINT` statement.
+String buildDropConstraintSql({
+  required String schema,
+  required String table,
+  required String name,
+  bool cascade = false,
+}) {
+  final target = qualifiedName(schema, table);
+  return 'ALTER TABLE $target DROP CONSTRAINT ${quoteIdent(name)}${cascade ? ' CASCADE' : ''};';
+}
+
+/// Generates statement(s) to alter/rename/replace a constraint.
+String buildAlterConstraintSql({
+  required String schema,
+  required String table,
+  required String oldName,
+  String? newName,
+  String? newDefinition,
+}) {
+  final target = qualifiedName(schema, table);
+  final targetName = newName ?? oldName;
+
+  if (newDefinition != null && newDefinition.trim().isNotEmpty) {
+    return 'ALTER TABLE $target DROP CONSTRAINT ${quoteIdent(oldName)},\n'
+        '    ADD CONSTRAINT ${quoteIdent(targetName)} ${newDefinition.trim()};';
+  }
+
+  if (newName != null && newName.isNotEmpty && newName != oldName) {
+    return 'ALTER TABLE $target RENAME CONSTRAINT ${quoteIdent(oldName)} TO ${quoteIdent(newName)};';
+  }
+
+  return '';
+}
+
+/// Generates a `CREATE INDEX` statement.
+String buildCreateIndexSql({
+  required String schema,
+  required String table,
+  required String name,
+  required List<String> columns,
+  String method = 'btree',
+  bool isUnique = false,
+  String? predicate,
+}) {
+  final target = qualifiedName(schema, table);
+  final idx = quoteIdent(name);
+  final cols = columns.map(quoteIdent).join(', ');
+  final uniqueClause = isUnique ? 'UNIQUE ' : '';
+  final methodClause =
+      method.isNotEmpty && method.toLowerCase() != 'btree'
+          ? ' USING $method'
+          : '';
+  final whereClause = (predicate != null && predicate.trim().isNotEmpty)
+      ? ' WHERE ${predicate.trim()}'
+      : '';
+  return 'CREATE ${uniqueClause}INDEX $idx ON $target$methodClause ($cols)$whereClause;';
+}
+
+/// Generates a `DROP INDEX` statement.
+String buildDropIndexSql({
+  required String schema,
+  required String name,
+  bool cascade = false,
+}) {
+  final idx = qualifiedName(schema, name);
+  return 'DROP INDEX $idx${cascade ? ' CASCADE' : ''};';
+}
+
+/// Generates an `ALTER INDEX ... RENAME TO` statement.
+String buildAlterIndexSql({
+  required String schema,
+  required String oldName,
+  required String newName,
+}) {
+  final idx = qualifiedName(schema, oldName);
+  return 'ALTER INDEX $idx RENAME TO ${quoteIdent(newName)};';
+}
+
+/// Generates a `CREATE TRIGGER` statement.
+String buildCreateTriggerSql({
+  required String schema,
+  required String table,
+  required String name,
+  required String timing,
+  required List<String> events,
+  String forEach = 'ROW',
+  required String functionName,
+  String? condition,
+}) {
+  final target = qualifiedName(schema, table);
+  final trg = quoteIdent(name);
+  final eventStr = events.join(' OR ');
+  final whenClause = (condition != null && condition.trim().isNotEmpty)
+      ? ' WHEN (${condition.trim()})'
+      : '';
+  final funcCall = functionName.trim().endsWith('()')
+      ? functionName.trim()
+      : '${functionName.trim()}()';
+  return 'CREATE TRIGGER $trg\n'
+      '    $timing $eventStr\n'
+      '    ON $target\n'
+      '    FOR EACH $forEach$whenClause\n'
+      '    EXECUTE FUNCTION $funcCall;';
+}
+
+/// Generates a `DROP TRIGGER` statement.
+String buildDropTriggerSql({
+  required String schema,
+  required String table,
+  required String name,
+  bool cascade = false,
+}) {
+  final target = qualifiedName(schema, table);
+  final trg = quoteIdent(name);
+  return 'DROP TRIGGER $trg ON $target${cascade ? ' CASCADE' : ''};';
+}
+
+/// Generates statement(s) to rename, enable or disable a trigger.
+String buildAlterTriggerSql({
+  required String schema,
+  required String table,
+  required String oldName,
+  String? newName,
+  bool? enabled,
+}) {
+  final target = qualifiedName(schema, table);
+  final statements = <String>[];
+  var currentName = oldName;
+
+  if (newName != null && newName.isNotEmpty && newName != oldName) {
+    statements.add(
+      'ALTER TRIGGER ${quoteIdent(oldName)} ON $target RENAME TO ${quoteIdent(newName)};',
+    );
+    currentName = newName;
+  }
+
+  if (enabled != null) {
+    statements.add(
+      'ALTER TABLE $target ${enabled ? 'ENABLE' : 'DISABLE'} TRIGGER ${quoteIdent(currentName)};',
+    );
+  }
+
+  return statements.join('\n');
+}
+
 String _columnDefinition(PgColumnDdl c) {
   final parts = [quoteIdent(c.name), c.type];
   if (c.identity.isNotEmpty) {

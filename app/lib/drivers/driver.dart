@@ -207,6 +207,7 @@ class ColumnInfo {
     required this.nullable,
     required this.isPrimaryKey,
     this.defaultValue,
+    this.comment,
   });
 
   final String name;
@@ -214,6 +215,7 @@ class ColumnInfo {
   final bool nullable;
   final bool isPrimaryKey;
   final String? defaultValue;
+  final String? comment;
 }
 
 class ResultColumn {
@@ -299,6 +301,10 @@ abstract class DatabaseDriver {
   /// is hit the statement is cancelled on the server and the result is
   /// marked [QueryResult.truncated].
   Future<QueryResult> execute(String sql, {int maxRows = 10000});
+
+  /// Runs [statements] in one transaction: either all of them take effect
+  /// or, if any fails, none do. Used for schema changes.
+  Future<void> executeAll(List<String> statements);
 
   /// Cancels the statement currently running in [execute], if any.
   Future<void> cancel();

@@ -420,7 +420,8 @@ class PostgresDriver implements DatabaseDriver {
                    SELECT 1 FROM pg_index i
                    WHERE i.indrelid = a.attrelid AND i.indisprimary
                      AND a.attnum = ANY (i.indkey)
-                 )
+                 ),
+                 col_description(a.attrelid, a.attnum)
           FROM pg_attribute a
           LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
           WHERE a.attrelid = $_relation
@@ -438,9 +439,19 @@ class PostgresDriver implements DatabaseDriver {
           nullable: row[2] as bool,
           defaultValue: row[3] as String?,
           isPrimaryKey: row[4] as bool,
+          comment: row[5] as String?,
         ),
     ];
   }
+
+  @override
+  Future<void> executeAll(List<String> statements) => _guard(
+    () => _queryConn.runTx((tx) async {
+      for (final sql in statements) {
+        await tx.execute(sql);
+      }
+    }),
+  );
 
   @override
   Future<QueryResult> execute(String sql, {int maxRows = 10000}) async {

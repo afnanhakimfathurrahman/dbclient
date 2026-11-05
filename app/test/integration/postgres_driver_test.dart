@@ -233,4 +233,19 @@ void main() {
     final after = await driver.execute('SELECT 1');
     expect(after.rows.single.single, 1);
   }, skip: skip);
+
+  // Uses a session setting rather than a table so the test stays read-only.
+  test('executeAll is all-or-nothing', () async {
+    await driver.executeAll(['SELECT 1', 'SELECT 2']);
+
+    await expectLater(
+      driver.executeAll([
+        "SET application_name = 'executeAll_rollback_test'",
+        'SELECT 1 / 0',
+      ]),
+      throwsA(isA<DriverException>().having((e) => e.code, 'code', '22012')),
+    );
+    final name = await driver.execute('SHOW application_name');
+    expect(name.rows.single.single, isNot('executeAll_rollback_test'));
+  }, skip: skip);
 }
