@@ -53,9 +53,11 @@ class _TabStrip extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final connections = ref.watch(connectionsProvider).value ?? const [];
     final notifier = ref.read(workspaceTabsProvider.notifier);
+    final theme = Theme.of(context);
 
-    return SizedBox(
-      height: 36,
+    return Container(
+      height: 38,
+      color: theme.colorScheme.surfaceContainerLow,
       child: Row(
         children: [
           Expanded(
@@ -74,10 +76,11 @@ class _TabStrip extends ConsumerWidget {
             ),
           ),
           IconButton(
-            tooltip: 'New SQL editor',
+            tooltip: 'New SQL editor (Ctrl+N)',
             icon: const Icon(Icons.add, size: 18),
             onPressed: () => notifier.open(state.active!.connectionId),
           ),
+          const SizedBox(width: 4),
         ],
       ),
     );
@@ -110,48 +113,71 @@ class _TabChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Material(
-      color: active ? scheme.surface : scheme.surfaceContainerHigh,
+      color: active ? scheme.surfaceContainer : Colors.transparent,
       child: GestureDetector(
         // Middle-click closes, like browser tabs.
         onTertiaryTapUp: (_) => onClose(),
         child: InkWell(
           onTap: onTap,
           child: Container(
-            padding: const EdgeInsets.only(left: 12, right: 2),
+            padding: const EdgeInsets.only(left: 10, right: 4),
             decoration: BoxDecoration(
               border: Border(
                 top: BorderSide(
                   color: active
                       ? (color ?? scheme.primary)
                       : Colors.transparent,
-                  width: 2,
+                  width: 2.5,
                 ),
                 right: BorderSide(color: scheme.outlineVariant),
               ),
             ),
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
+                if (color != null) ...[
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                ],
                 ListenableBuilder(
                   listenable: tab,
                   builder: (_, _) => tab.busy
                       ? const SizedBox.square(
-                          dimension: 10,
+                          dimension: 11,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : Icon(
                           tab is InspectorTab
-                              ? Icons.table_chart_outlined
-                              : Icons.code,
+                              ? Icons.table_chart_rounded
+                              : Icons.terminal_rounded,
                           size: 14,
-                          color: color,
+                          color: active
+                              ? (color ?? scheme.primary)
+                              : scheme.onSurfaceVariant,
                         ),
                 ),
                 const SizedBox(width: 6),
-                Text(tab.title),
+                Text(
+                  tab.title,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                    color: active ? scheme.onSurface : scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 4),
                 IconButton(
-                  tooltip: 'Close',
-                  iconSize: 14,
+                  tooltip: 'Close tab',
+                  iconSize: 13,
                   visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(4),
                   icon: const Icon(Icons.close),
                   onPressed: onClose,
                 ),
@@ -164,31 +190,261 @@ class _TabChip extends StatelessWidget {
   }
 }
 
-class _EmptyWorkspace extends StatelessWidget {
+class _EmptyWorkspace extends ConsumerWidget {
   const _EmptyWorkspace();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 580),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      scheme.primary.withValues(alpha: 0.15),
+                      scheme.secondary.withValues(alpha: 0.1),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: scheme.primary.withValues(alpha: 0.25),
+                  ),
+                ),
+                child: Icon(
+                  Icons.terminal_rounded,
+                  size: 38,
+                  color: scheme.primary,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Welcome to DB Client',
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Direct cross-platform database IDE. Connect directly to real databases without intermediaries.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: _QuickActionCard(
+                      icon: Icons.code_rounded,
+                      iconColor: const Color(0xFF10B981),
+                      title: 'New SQL Query',
+                      subtitle: 'Write and run SQL with live results',
+                      badge: 'Ctrl+N',
+                      onTap: () => openNewSqlEditor(context, ref),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _QuickActionCard(
+                      icon: Icons.add_circle_outline_rounded,
+                      iconColor: scheme.primary,
+                      title: 'Add Connection',
+                      subtitle: 'Connect to PostgreSQL server or local DB',
+                      badge: 'Direct TCP',
+                      onTap: () => showConnectionDialog(context),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: scheme.outlineVariant),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.keyboard_rounded,
+                          size: 15,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'KEYBOARD SHORTCUTS',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.6,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _ShortcutItem(label: 'Run Statement', keys: 'Ctrl+↵'),
+                        _ShortcutItem(label: 'Run Script', keys: 'Ctrl+Shift+↵'),
+                        _ShortcutItem(label: 'Copy Cell', keys: 'Ctrl+C'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickActionCard extends StatelessWidget {
+  const _QuickActionCard({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.badge,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final String badge;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.terminal, size: 48, color: theme.colorScheme.outline),
-            const SizedBox(height: 12),
-            Text('No editor open', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 4),
-            Text(
-              'Open a connection and choose "New SQL editor",\n'
-              'or double-click a table.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall,
-            ),
-          ],
+    final scheme = theme.colorScheme;
+
+    return Material(
+      color: scheme.surfaceContainer,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: iconColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(icon, size: 18, color: iconColor),
+                  ),
+                  const Spacer(),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerLowest,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: scheme.outlineVariant),
+                    ),
+                    child: Text(
+                      badge,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _ShortcutItem extends StatelessWidget {
+  const _ShortcutItem({required this.label, required this.keys});
+
+  final String label;
+  final String keys;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+        ),
+        const SizedBox(width: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Text(
+            keys,
+            style: monoBadgeStyle.copyWith(
+              fontSize: 10,
+              color: scheme.onSurface,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -299,6 +555,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
                       tab: tab,
                       runTooltip: 'Run statement ($runKey)',
                       scriptTooltip: 'Run script ($scriptKey)',
+                      runKeyText: runKey,
                       onRun: () => _run(script: false),
                       onRunScript: () => _run(script: true),
                       onHistory: _showHistory,
@@ -308,22 +565,11 @@ class _EditorViewState extends ConsumerState<EditorView> {
                     height: editorHeight,
                     child: SqlEditor(controller: tab.controller),
                   ),
-                  MouseRegion(
-                    cursor: SystemMouseCursors.resizeRow,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.translucent,
-                      onVerticalDragUpdate: (d) => setState(() {
-                        _editorFraction =
-                            ((editorHeight + d.delta.dy) / available).clamp(
-                              0.1,
-                              0.9,
-                            );
-                      }),
-                      child: const SizedBox(
-                        height: dividerHeight,
-                        child: Center(child: Divider()),
-                      ),
-                    ),
+                  _HorizontalSplitter(
+                    onDragUpdate: (dy) => setState(() {
+                      _editorFraction =
+                          ((editorHeight + dy) / available).clamp(0.1, 0.9);
+                    }),
                   ),
                   Expanded(child: ResultsView(tab: tab)),
                 ],
@@ -336,11 +582,66 @@ class _EditorViewState extends ConsumerState<EditorView> {
   }
 }
 
+class _HorizontalSplitter extends StatefulWidget {
+  const _HorizontalSplitter({required this.onDragUpdate});
+
+  final ValueChanged<double> onDragUpdate;
+
+  @override
+  State<_HorizontalSplitter> createState() => _HorizontalSplitterState();
+}
+
+class _HorizontalSplitterState extends State<_HorizontalSplitter> {
+  bool _isHovered = false;
+  bool _isDragging = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final highlighted = _isHovered || _isDragging;
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeRow,
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onVerticalDragStart: (_) => setState(() => _isDragging = true),
+        onVerticalDragEnd: (_) => setState(() => _isDragging = false),
+        onVerticalDragCancel: () => setState(() => _isDragging = false),
+        onVerticalDragUpdate: (d) => widget.onDragUpdate(d.delta.dy),
+        child: SizedBox(
+          height: 8,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                height: highlighted ? 2 : 1,
+                color: highlighted ? scheme.primary : scheme.outlineVariant,
+              ),
+              if (highlighted)
+                Container(
+                  width: 32,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: scheme.primary,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _Toolbar extends ConsumerWidget {
   const _Toolbar({
     required this.tab,
     required this.runTooltip,
     required this.scriptTooltip,
+    required this.runKeyText,
     required this.onRun,
     required this.onRunScript,
     required this.onHistory,
@@ -349,62 +650,135 @@ class _Toolbar extends ConsumerWidget {
   final EditorTab tab;
   final String runTooltip;
   final String scriptTooltip;
+  final String runKeyText;
   final VoidCallback onRun;
   final VoidCallback onRunScript;
   final VoidCallback onHistory;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = Theme.of(context).colorScheme;
     final connections = ref.watch(connectionsProvider).value ?? const [];
     final hasConnection = connections.any((c) => c.id == tab.connectionId);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+      ),
       child: Row(
         children: [
-          IconButton(
-            tooltip: runTooltip,
-            icon: const Icon(Icons.play_arrow),
-            color: Colors.green.shade600,
-            onPressed: tab.running ? null : onRun,
+          // Prominent Run Button
+          Tooltip(
+            message: runTooltip,
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF10B981),
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: tab.running
+                  ? const SizedBox.square(
+                      dimension: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.play_arrow_rounded, size: 16),
+              label: Text(
+                'Run ($runKeyText)',
+                style:
+                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+              ),
+              onPressed: tab.running ? null : onRun,
+            ),
           ),
-          IconButton(
-            tooltip: scriptTooltip,
-            icon: const Icon(Icons.playlist_play),
-            onPressed: tab.running ? null : onRunScript,
+          const SizedBox(width: 6),
+          Tooltip(
+            message: scriptTooltip,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(Icons.playlist_play_rounded, size: 16),
+              label: const Text('Script', style: TextStyle(fontSize: 12)),
+              onPressed: tab.running ? null : onRunScript,
+            ),
           ),
-          IconButton(
-            tooltip: 'Cancel',
-            icon: const Icon(Icons.stop),
-            color: Theme.of(context).colorScheme.error,
-            onPressed: tab.running ? tab.cancel : null,
+          if (tab.running) ...[
+            const SizedBox(width: 6),
+            FilledButton.tonalIcon(
+              style: FilledButton.styleFrom(
+                backgroundColor: scheme.errorContainer,
+                foregroundColor: scheme.onErrorContainer,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(Icons.stop_rounded, size: 16),
+              label: const Text('Cancel', style: TextStyle(fontSize: 12)),
+              onPressed: tab.cancel,
+            ),
+          ],
+          const SizedBox(width: 8),
+          SizedBox(
+            height: 18,
+            child: VerticalDivider(color: scheme.outlineVariant),
           ),
-          const VerticalDivider(indent: 8, endIndent: 8),
+          const SizedBox(width: 4),
           IconButton(
             tooltip: 'Query history',
-            icon: const Icon(Icons.history),
+            icon: const Icon(Icons.history_rounded, size: 18),
             onPressed: onHistory,
           ),
           const Spacer(),
-          Flexible(
-            flex: 3,
+
+          // Target Connection Dropdown Pill
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainer,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: scheme.outlineVariant),
+            ),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(
-                isExpanded: true,
+                isDense: true,
                 value: hasConnection ? tab.connectionId : null,
-                hint: const Text('No connection'),
+                hint: Text(
+                  'Select connection',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                icon: const Icon(Icons.arrow_drop_down, size: 18),
                 items: [
                   for (final c in connections)
                     DropdownMenuItem(
                       value: c.id,
                       child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.circle, size: 10, color: Color(c.color)),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              c.name,
-                              overflow: TextOverflow.ellipsis,
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              color: Color(c.color),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            c.name,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
                         ],
@@ -415,7 +789,7 @@ class _Toolbar extends ConsumerWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
         ],
       ),
     );

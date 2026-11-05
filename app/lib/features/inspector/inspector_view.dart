@@ -9,6 +9,7 @@ import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
 import '../connections/connection_dialog.dart';
 import '../editor/workspace.dart';
+import '../results/export_dialog.dart';
 import '../results/results_view.dart';
 
 /// DBeaver-style object editor: data preview, metadata tables and DDL for
@@ -68,35 +69,77 @@ class InspectorView extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 6, 4, 0),
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 8, 8, 4),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerLow,
+            ),
             child: Row(
               children: [
-                Icon(_kindIcon(object.kind), size: 18),
+                Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: _kindColor(object.kind).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Icon(
+                    _kindIcon(object.kind),
+                    size: 16,
+                    color: _kindColor(object.kind),
+                  ),
+                ),
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
                     '${object.schema}.${object.name}',
                     overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleSmall,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  object.kind.label,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 1.5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _kindColor(object.kind).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: _kindColor(object.kind).withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Text(
+                    object.kind.label,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: _kindColor(object.kind),
+                    ),
                   ),
                 ),
                 const Spacer(),
-                IconButton(
-                  tooltip: 'Query in SQL editor',
-                  icon: const Icon(Icons.code, size: 18),
+                FilledButton.tonalIcon(
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                  ),
+                  icon: const Icon(Icons.code_rounded, size: 15),
+                  label: const Text(
+                    'Query in SQL',
+                    style: TextStyle(fontSize: 12),
+                  ),
                   onPressed: () => _openInEditor(ref, '$_selectSql;'),
                 ),
+                const SizedBox(width: 4),
                 IconButton(
                   tooltip: 'Refresh',
-                  icon: const Icon(Icons.refresh, size: 18),
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
                   onPressed: () => _refresh(context, ref),
                 ),
               ],
@@ -219,12 +262,21 @@ class InspectorView extends ConsumerWidget {
   };
 
   static IconData _kindIcon(DbObjectKind kind) => switch (kind) {
-    DbObjectKind.table => Icons.table_chart_outlined,
-    DbObjectKind.partitionedTable => Icons.view_module_outlined,
-    DbObjectKind.view => Icons.visibility_outlined,
-    DbObjectKind.materializedView => Icons.auto_awesome_motion_outlined,
-    DbObjectKind.foreignTable => Icons.link,
-    DbObjectKind.sequence => Icons.pin_outlined,
+    DbObjectKind.table => Icons.table_chart_rounded,
+    DbObjectKind.partitionedTable => Icons.view_module_rounded,
+    DbObjectKind.view => Icons.visibility_rounded,
+    DbObjectKind.materializedView => Icons.auto_awesome_motion_rounded,
+    DbObjectKind.foreignTable => Icons.link_rounded,
+    DbObjectKind.sequence => Icons.pin_rounded,
+  };
+
+  static Color _kindColor(DbObjectKind kind) => switch (kind) {
+    DbObjectKind.table => const Color(0xFF0EA5E9),
+    DbObjectKind.partitionedTable => const Color(0xFF3B82F6),
+    DbObjectKind.view => const Color(0xFFA855F7),
+    DbObjectKind.materializedView => const Color(0xFF8B5CF6),
+    DbObjectKind.foreignTable => const Color(0xFF10B981),
+    DbObjectKind.sequence => const Color(0xFFF59E0B),
   };
 }
 
@@ -289,6 +341,25 @@ class _DataPageState extends State<_DataPage> {
                   ? 'First ${preview.rows.length} rows — use "Query in SQL '
                         'editor" to filter or see more'
                   : '${preview.rows.length} row(s)',
+              trailing: preview.rows.isEmpty
+                  ? null
+                  : TextButton.icon(
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        textStyle: const TextStyle(fontSize: 11),
+                      ),
+                      icon: const Icon(Icons.file_download_outlined, size: 14),
+                      label: const Text('Export…'),
+                      onPressed: () => showExportDialog(
+                        context,
+                        result: preview,
+                        defaultTableName: qualifiedName(
+                          tab.object.schema,
+                          tab.object.name,
+                        ),
+                        fileName: tab.object.name,
+                      ),
+                    ),
             ),
           ],
         );
@@ -417,22 +488,33 @@ class _DdlPageState extends State<_DdlPage> {
 }
 
 class _Footer extends StatelessWidget {
-  const _Footer(this.text);
+  const _Footer(this.text, {this.trailing});
 
   final String text;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Container(
-      height: 26,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      alignment: Alignment.centerLeft,
+      height: 28,
+      padding: const EdgeInsets.only(left: 12, right: 6),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerLow,
         border: Border(top: BorderSide(color: theme.dividerColor)),
       ),
-      child: Text(text, style: theme.textTheme.bodySmall),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              text,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+          ?trailing,
+        ],
+      ),
     );
   }
 }
