@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../drivers/driver.dart';
-import '../../state/editor_tabs.dart';
+import '../../drivers/postgres/postgres_sql.dart';
+import '../../state/workspace_tabs.dart';
 import '../../state/providers.dart';
 import '../connections/connection_dialog.dart';
 
@@ -52,7 +54,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
     final driver = await connectWithPrompt(context, ref, config);
     if (driver == null || !mounted) return;
     ref
-        .read(editorTabsProvider.notifier)
+        .read(workspaceTabsProvider.notifier)
         .open(config.id, initialText: initialText);
     widget.onEditorOpened?.call();
   }
@@ -86,7 +88,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
     );
     if (confirmed != true) return;
     await _disconnect(config);
-    ref.read(editorTabsProvider.notifier).closeForConnection(config.id);
+    ref.read(workspaceTabsProvider.notifier).closeForConnection(config.id);
     await ref.read(connectionRepositoryProvider).delete(config.id);
   }
 
@@ -318,10 +320,8 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
             ? object.kind.label
             : '${object.kind.label}\n$detail',
         onTap: folders.isEmpty ? null : () => _toggle(key),
-        onDoubleTap: () => _openEditor(
-          config,
-          initialText: 'SELECT * FROM ${_qualified(object)} LIMIT 100;',
-        ),
+        onDoubleTap: () => _openInspector(config, object),
+        onContextMenu: (position) => _showObjectMenu(position, config, object),
       ),
       if (open)
         for (final folder in folders)
@@ -537,7 +537,45 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
   }
 
   String _qualified(DbObject object) =>
-      '${quoteIdent(object.schema)}.${quoteIdent(object.name)}';
+      qualifiedName(object.schema, object.name);
+
+  void _openInspector(ConnectionConfig config, DbObject object) {
+    ref.read(workspaceTabsProvider.notifier).openInspector(config.id, object);
+    widget.onEditorOpened?.call();
+  }
+
+  Future<void> _showObjectMenu(
+    Offset position,
+    ConnectionConfig config,
+    DbObject object,
+  ) async {
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        position.dx,
+        position.dy,
+      ),
+      items: const [
+        PopupMenuItem(value: 'open', child: Text('Open')),
+        PopupMenuItem(value: 'query', child: Text('Query in SQL editor')),
+        PopupMenuItem(value: 'copy', child: Text('Copy name')),
+      ],
+    );
+    if (!mounted) return;
+    switch (action) {
+      case 'open':
+        _openInspector(config, object);
+      case 'query':
+        await _openEditor(
+          config,
+          initialText: 'SELECT * FROM ${_qualified(object)} LIMIT 100;',
+        );
+      case 'copy':
+        await Clipboard.setData(ClipboardData(text: _qualified(object)));
+    }
+  }
 
   List<_ObjectFolder> _foldersFor(DbObjectKind kind) => switch (kind) {
     DbObjectKind.table => const [
@@ -655,12 +693,6 @@ class _FolderRow extends StatelessWidget {
   }
 }
 
-/// Quotes a Postgres identifier when it isn't a plain lowercase name.
-String quoteIdent(String name) {
-  if (RegExp(r'^[a-z_][a-z0-9_$]*$').hasMatch(name)) return name;
-  return '"${name.replaceAll('"', '""')}"';
-}
-
 class _TreeRow extends StatelessWidget {
   const _TreeRow({
     required this.depth,
@@ -673,6 +705,7 @@ class _TreeRow extends StatelessWidget {
     this.trailing,
     this.onTap,
     this.onDoubleTap,
+    this.onContextMenu,
   });
 
   final int depth;
@@ -688,12 +721,27 @@ class _TreeRow extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
 
+  /// Right-click on desktop, long-press on touch; gets the global position.
+  final void Function(Offset position)? onContextMenu;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final row = InkWell(
       onTap: onTap,
       onDoubleTap: onDoubleTap,
+      onSecondaryTapDown: onContextMenu == null
+          ? null
+          : (d) => onContextMenu!(d.globalPosition),
+      onLongPress: onContextMenu == null
+          ? null
+          : () {
+              final box = context.findRenderObject() as RenderBox?;
+              onContextMenu!(
+                box?.localToGlobal(box.size.centerLeft(Offset.zero)) ??
+                    Offset.zero,
+              );
+            },
       child: Padding(
         padding: EdgeInsets.only(left: 4.0 + depth * 12, right: 4),
         child: SizedBox(

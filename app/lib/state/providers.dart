@@ -154,4 +154,14 @@ void invalidateMetadata(WidgetRef ref, String connectionId) {
   ref.invalidate(triggersProvider);
   ref.invalidate(partitionsProvider);
   ref.invalidate(routinesProvider);
+  ref.invalidate(ddlProvider);
 }
+
+final ddlProvider = FutureProvider.family<String, RelationKey>((
+  ref,
+  key,
+) async {
+  final driver = ref.watch(driverProvider(key.$1));
+  if (driver == null) return '';
+  return driver.ddl(key.$2, key.$3);
+});
