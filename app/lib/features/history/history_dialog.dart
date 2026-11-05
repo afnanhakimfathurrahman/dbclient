@@ -37,9 +37,28 @@ class _HistoryDialogState extends ConsumerState<_HistoryDialog> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
     return AlertDialog(
-      title: const Text('Query history'),
-      contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      title: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: scheme.primary.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Icon(
+              Icons.history_rounded,
+              size: 18,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          const Text('Query History'),
+        ],
+      ),
+      contentPadding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       content: SizedBox(
         width: 720,
         height: 480,
@@ -47,18 +66,18 @@ class _HistoryDialogState extends ConsumerState<_HistoryDialog> {
           children: [
             TextField(
               autofocus: true,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 isDense: true,
-                prefixIcon: Icon(Icons.search, size: 18),
-                hintText: 'Search',
-                border: OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.search, size: 18),
+                hintText: 'Search queries...',
+                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               ),
               onChanged: (v) => setState(() {
                 _filter = v.trim();
                 _entries = _watch();
               }),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Expanded(
               child: StreamBuilder<List<HistoryEntry>>(
                 stream: _entries,
@@ -68,40 +87,90 @@ class _HistoryDialogState extends ConsumerState<_HistoryDialog> {
                     return const Center(child: CircularProgressIndicator());
                   }
                   if (entries.isEmpty) {
-                    return const Center(child: Text('No queries yet.'));
+                    return Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.history_toggle_off_rounded, size: 36, color: scheme.outline),
+                          const SizedBox(height: 8),
+                          Text('No queries found', style: TextStyle(color: scheme.onSurfaceVariant)),
+                        ],
+                      ),
+                    );
                   }
                   return ListView.separated(
                     itemCount: entries.length,
-                    separatorBuilder: (_, _) => const Divider(),
+                    separatorBuilder: (_, _) => const Divider(height: 1),
                     itemBuilder: (context, i) {
                       final e = entries[i];
+                      final isSuccess = e.error == null;
                       return ListTile(
                         dense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                         onTap: () => Navigator.of(context).pop(e.sql),
-                        leading: Icon(
-                          e.error == null
-                              ? Icons.check_circle_outline
-                              : Icons.error_outline,
-                          color: e.error == null
-                              ? Colors.green.shade600
-                              : theme.colorScheme.error,
-                          size: 18,
+                        leading: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: isSuccess
+                                ? const Color(0xFF10B981).withValues(alpha: 0.15)
+                                : scheme.error.withValues(alpha: 0.15),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            isSuccess
+                                ? Icons.check_rounded
+                                : Icons.close_rounded,
+                            color: isSuccess
+                                ? const Color(0xFF10B981)
+                                : scheme.error,
+                            size: 14,
+                          ),
                         ),
                         title: Text(
                           e.sql,
-                          maxLines: 3,
+                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                          style: monoStyle,
+                          style: monoStyle.copyWith(fontSize: 12),
                         ),
-                        subtitle: Text(
-                          [
-                            _formatTime(e.executedAt),
-                            '${e.duration.inMilliseconds} ms',
-                            if (e.rowCount != null) '${e.rowCount} rows',
-                            if (e.error != null) e.error!,
-                          ].join('  ·  '),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Row(
+                            children: [
+                              Text(
+                                _formatTime(e.executedAt),
+                                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                              ),
+                              const SizedBox(width: 8),
+                              Text('·', style: TextStyle(color: scheme.outlineVariant)),
+                              const SizedBox(width: 8),
+                              Text(
+                                '${e.duration.inMilliseconds} ms',
+                                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                              ),
+                              if (e.rowCount != null) ...[
+                                const SizedBox(width: 8),
+                                Text('·', style: TextStyle(color: scheme.outlineVariant)),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '${e.rowCount} rows',
+                                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: scheme.onSurface),
+                                ),
+                              ],
+                              if (e.error != null) ...[
+                                const SizedBox(width: 8),
+                                Text('·', style: TextStyle(color: scheme.outlineVariant)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    e.error!,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(fontSize: 11, color: scheme.error),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
                       );
                     },

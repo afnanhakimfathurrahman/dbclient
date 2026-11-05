@@ -1,5 +1,7 @@
+import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show FutureProviderFamily;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/app_database.dart';
 import '../data/repositories.dart';
@@ -165,3 +167,30 @@ final ddlProvider = FutureProvider.family<String, RelationKey>((
   if (driver == null) return '';
   return driver.ddl(key.$2, key.$3);
 });
+
+/// Preferences loaded once at startup; overridden in `main`.
+final sharedPreferencesProvider = Provider<SharedPreferences>(
+  (ref) => throw UnimplementedError('override in main()'),
+);
+
+class ThemeModeNotifier extends Notifier<ThemeMode> {
+  static const _key = 'themeMode';
+
+  @override
+  ThemeMode build() {
+    final saved = ref.watch(sharedPreferencesProvider).getString(_key);
+    return ThemeMode.values.asNameMap()[saved] ?? ThemeMode.dark;
+  }
+
+  void toggle() {
+    setMode(state == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark);
+  }
+
+  void setMode(ThemeMode mode) {
+    state = mode;
+    ref.read(sharedPreferencesProvider).setString(_key, mode.name);
+  }
+}
+
+final themeModeProvider =
+    NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);

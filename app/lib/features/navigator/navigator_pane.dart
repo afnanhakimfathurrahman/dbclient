@@ -111,32 +111,45 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 4, 0),
+            padding: const EdgeInsets.fromLTRB(14, 12, 8, 4),
             child: Row(
               children: [
-                Text('Connections', style: theme.textTheme.titleSmall),
+                Text(
+                  'CONNECTIONS',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
                 const Spacer(),
                 IconButton(
                   tooltip: 'New connection',
-                  icon: const Icon(Icons.add),
+                  icon: const Icon(Icons.add, size: 18),
                   onPressed: () => showConnectionDialog(context),
                 ),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             child: TextField(
               controller: _filterController,
               decoration: InputDecoration(
                 isDense: true,
-                prefixIcon: const Icon(Icons.search, size: 18),
-                hintText: 'Filter objects',
-                border: const OutlineInputBorder(),
+                prefixIcon: Icon(
+                  Icons.search,
+                  size: 16,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                hintText: 'Filter schemas, tables...',
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 suffixIcon: _filter.isEmpty
                     ? null
                     : IconButton(
-                        icon: const Icon(Icons.clear, size: 16),
+                        icon: const Icon(Icons.clear, size: 14),
                         onPressed: () => setState(() {
                           _filterController.clear();
                           _filter = '';
@@ -313,7 +326,11 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
       _TreeRow(
         depth: depth,
         expanded: folders.isEmpty ? null : open,
-        leading: Icon(_objectIcon(object.kind), size: 16),
+        leading: Icon(
+          _objectIcon(object.kind),
+          size: 16,
+          color: _objectColor(object.kind),
+        ),
         label: object.name,
         detail: detail,
         tooltip: detail == null
@@ -606,12 +623,21 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
   };
 
   IconData _objectIcon(DbObjectKind kind) => switch (kind) {
-    DbObjectKind.table => Icons.table_chart_outlined,
-    DbObjectKind.partitionedTable => Icons.view_module_outlined,
-    DbObjectKind.view => Icons.visibility_outlined,
-    DbObjectKind.materializedView => Icons.auto_awesome_motion_outlined,
-    DbObjectKind.foreignTable => Icons.link,
-    DbObjectKind.sequence => Icons.pin_outlined,
+    DbObjectKind.table => Icons.table_chart_rounded,
+    DbObjectKind.partitionedTable => Icons.view_module_rounded,
+    DbObjectKind.view => Icons.visibility_rounded,
+    DbObjectKind.materializedView => Icons.auto_awesome_motion_rounded,
+    DbObjectKind.foreignTable => Icons.link_rounded,
+    DbObjectKind.sequence => Icons.pin_rounded,
+  };
+
+  Color _objectColor(DbObjectKind kind) => switch (kind) {
+    DbObjectKind.table => const Color(0xFF0EA5E9),
+    DbObjectKind.partitionedTable => const Color(0xFF3B82F6),
+    DbObjectKind.view => const Color(0xFFA855F7),
+    DbObjectKind.materializedView => const Color(0xFF8B5CF6),
+    DbObjectKind.foreignTable => const Color(0xFF10B981),
+    DbObjectKind.sequence => const Color(0xFFF59E0B),
   };
 
   IconData _constraintIcon(ConstraintKind kind) => switch (kind) {
@@ -728,6 +754,7 @@ class _TreeRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final row = InkWell(
+      borderRadius: BorderRadius.circular(6),
       onTap: onTap,
       onDoubleTap: onDoubleTap,
       onSecondaryTapDown: onContextMenu == null
@@ -743,7 +770,7 @@ class _TreeRow extends StatelessWidget {
               );
             },
       child: Padding(
-        padding: EdgeInsets.only(left: 4.0 + depth * 12, right: 4),
+        padding: EdgeInsets.only(left: 4.0 + depth * 12, right: 6),
         child: SizedBox(
           height: subtitle == null ? 28 : 44,
           child: Row(
@@ -764,7 +791,12 @@ class _TreeRow extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(label, overflow: TextOverflow.ellipsis, maxLines: 1),
+                    Text(
+                      label,
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      style: const TextStyle(fontSize: 13),
+                    ),
                     if (subtitle != null)
                       Text(
                         subtitle!,
@@ -772,18 +804,31 @@ class _TreeRow extends StatelessWidget {
                         maxLines: 1,
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
+                          fontSize: 11,
                         ),
                       ),
                   ],
                 ),
               ),
               if (detail != null)
-                Flexible(
+                Container(
+                  margin: const EdgeInsets.only(left: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest
+                        .withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: theme.colorScheme.outlineVariant
+                          .withValues(alpha: 0.6),
+                    ),
+                  ),
                   child: Text(
                     detail!,
                     overflow: TextOverflow.ellipsis,
-                    style: monoStyle.copyWith(
-                      fontSize: 11,
+                    style: monoBadgeStyle.copyWith(
+                      fontSize: 10,
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
@@ -820,12 +865,21 @@ class _StatusDot extends StatelessWidget {
         _ => 'Disconnected',
       },
       child: Container(
-        width: 12,
-        height: 12,
+        width: 11,
+        height: 11,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: connected ? color : null,
+          color: connected ? color : Colors.transparent,
           border: Border.all(color: color, width: 2),
+          boxShadow: connected
+              ? [
+                  BoxShadow(
+                    color: color.withValues(alpha: 0.5),
+                    blurRadius: 4,
+                    spreadRadius: 1,
+                  ),
+                ]
+              : null,
         ),
       ),
     );
@@ -911,20 +965,46 @@ class _EmptyConnections extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.storage_outlined, size: 40),
-            const SizedBox(height: 12),
-            const Text('No connections yet', textAlign: TextAlign.center),
-            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: scheme.primary.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.dns_rounded,
+                size: 32,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'No connections yet',
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Connect to PostgreSQL to browse schemas, tables, and run queries.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: onAdd,
-              icon: const Icon(Icons.add),
-              label: const Text('New connection'),
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('Add Connection'),
             ),
           ],
         ),
