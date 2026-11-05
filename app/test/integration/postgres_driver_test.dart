@@ -66,6 +66,58 @@ void main() {
     expect(columns.every((c) => c.dataType.isNotEmpty), isTrue);
   }, skip: skip);
 
+  test('table metadata: indexes, constraints, triggers, partitions', () async {
+    final schema = env['PG_TEST_SCHEMA'] ?? (await driver.listSchemas()).first;
+    final tables = [
+      for (final o in await driver.listObjects(schema))
+        if (o.kind.isTable) o,
+    ];
+    var sawIndex = false;
+    var sawConstraint = false;
+    // Every query must work on every table; check a sample of them.
+    for (final table in tables.take(15)) {
+      final indexes = await driver.listIndexes(schema, table.name);
+      final constraints = await driver.listConstraints(schema, table.name);
+      final triggers = await driver.listTriggers(schema, table.name);
+      final partitions = await driver.listPartitions(schema, table.name);
+      sawIndex |= indexes.isNotEmpty;
+      sawConstraint |= constraints.isNotEmpty;
+      for (final i in indexes) {
+        expect(i.definition, startsWith('CREATE'));
+      }
+      for (final c in constraints) {
+        expect(c.definition, isNotEmpty);
+        expect(c.referencedTable != null, c.kind == ConstraintKind.foreignKey);
+      }
+      for (final t in triggers) {
+        expect(t.definition, startsWith('CREATE'));
+      }
+      if (table.kind != DbObjectKind.partitionedTable) {
+        expect(partitions, isEmpty);
+      }
+      for (final p in partitions) {
+        expect(p.bound, isNotEmpty);
+      }
+    }
+    if (env['PG_TEST_SCHEMA'] != null && tables.isNotEmpty) {
+      expect(sawIndex, isTrue, reason: 'expected some table with an index');
+      expect(
+        sawConstraint,
+        isTrue,
+        reason: 'expected some table with a constraint',
+      );
+    }
+  }, skip: skip);
+
+  test('routines and their definitions', () async {
+    final schema = env['PG_TEST_SCHEMA'] ?? 'public';
+    final routines = await driver.listRoutines(schema);
+    for (final routine in routines.take(5)) {
+      final definition = await driver.routineDefinition(routine);
+      expect(definition, contains('CREATE OR REPLACE'));
+    }
+  }, skip: skip);
+
   test('select from a real table', () async {
     final schema = env['PG_TEST_SCHEMA'];
     if (schema == null) return;
@@ -74,7 +126,8 @@ void main() {
       (o) => o.kind == DbObjectKind.table,
       orElse: () => objects.first,
     );
-    final quoted = '"${schema.replaceAll('"', '""')}"."${table.name.replaceAll('"', '""')}"';
+    final quoted =
+        '"${schema.replaceAll('"', '""')}"."${table.name.replaceAll('"', '""')}"';
     final result = await driver.execute('SELECT * FROM $quoted LIMIT 20');
     expect(result.hasResultSet, isTrue);
     expect(result.columns, isNotEmpty);

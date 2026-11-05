@@ -7,7 +7,8 @@ import '../../state/editor_tabs.dart';
 import '../../state/providers.dart';
 import '../connections/connection_dialog.dart';
 
-/// Connection list with a lazily loaded schema → object → column tree.
+/// Connection list with a lazily loaded, DBeaver-style object tree:
+/// schema → Tables/Views/… folders → object → Columns/Indexes/… folders.
 class NavigatorPane extends ConsumerStatefulWidget {
   const NavigatorPane({super.key, this.onEditorOpened});
 
@@ -61,11 +62,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
     await ref.read(sessionsProvider.notifier).disconnect(config.id);
   }
 
-  void _refresh(ConnectionConfig config) {
-    ref.invalidate(schemasProvider(config.id));
-    ref.invalidate(objectsProvider);
-    ref.invalidate(columnsProvider);
-  }
+  void _refresh(ConnectionConfig config) => invalidateMetadata(ref, config.id);
 
   Future<void> _delete(ConnectionConfig config) async {
     final confirmed = await showDialog<bool>(
@@ -132,7 +129,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
               decoration: InputDecoration(
                 isDense: true,
                 prefixIcon: const Icon(Icons.search, size: 18),
-                hintText: 'Filter tables',
+                hintText: 'Filter objects',
                 border: const OutlineInputBorder(),
                 suffixIcon: _filter.isEmpty
                     ? null
@@ -236,12 +233,12 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
           _TreeRow(
             depth: 1,
             expanded: _isSchemaExpanded(config, schema),
-            leading: const Icon(Icons.folder_outlined, size: 16),
+            leading: const Icon(Icons.account_tree_outlined, size: 16),
             label: schema,
             onTap: () => _toggle('s:${config.id}:$schema'),
           ),
           if (_isSchemaExpanded(config, schema))
-            ..._objectNodes(config, schema),
+            ..._schemaFolders(config, schema),
         ],
       ],
     );
@@ -251,39 +248,47 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
   bool _isSchemaExpanded(ConnectionConfig config, String schema) =>
       _filter.isNotEmpty || _expanded.contains('s:${config.id}:$schema');
 
-  List<Widget> _objectNodes(ConnectionConfig config, String schema) {
+  /// Tables, Views, … folders of a schema, followed by Functions.
+  List<Widget> _schemaFolders(ConnectionConfig config, String schema) {
     final objects = ref.watch(objectsProvider((config.id, schema)));
     return objects.when(
       loading: () => [const _Loading(depth: 2)],
       error: (e, _) => [_ErrorRow(depth: 2, error: e)],
       data: (list) {
-        final visible = _filter.isEmpty
-            ? list
-            : list
-                  .where((o) => o.name.toLowerCase().contains(_filter))
-                  .toList();
-        if (visible.isEmpty) {
-          return _filter.isEmpty ? [const _Message('No tables', depth: 2)] : [];
-        }
-        return [
-          for (final object in visible) ...[
-            _TreeRow(
+        final widgets = <Widget>[];
+        for (final folder in _relationFolders) {
+          final all = [
+            for (final o in list)
+              if (folder.kinds.contains(o.kind)) o,
+          ];
+          if (all.isEmpty && folder.hideWhenEmpty) continue;
+          final visible = _filter.isEmpty
+              ? all
+              : [
+                  for (final o in all)
+                    if (o.name.toLowerCase().contains(_filter)) o,
+                ];
+          // While filtering, only folders with matches show, already open.
+          if (_filter.isNotEmpty && visible.isEmpty) continue;
+          final key = 'f:${config.id}:$schema:${folder.label}';
+          final open = _filter.isNotEmpty || _expanded.contains(key);
+          widgets.add(
+            _FolderRow(
               depth: 2,
-              expanded: _expanded.contains(_objectKey(config, object)),
-              leading: Icon(_objectIcon(object.kind), size: 16),
-              label: object.name,
-              tooltip: object.kind.label,
-              onTap: () => _toggle(_objectKey(config, object)),
-              onDoubleTap: () => _openEditor(
-                config,
-                initialText:
-                    'SELECT * FROM ${quoteIdent(object.schema)}.${quoteIdent(object.name)} LIMIT 100;',
-              ),
+              label: folder.label,
+              count: visible.length,
+              expanded: open,
+              onTap: () => _toggle(key),
             ),
-            if (_expanded.contains(_objectKey(config, object)))
-              ..._columnNodes(config, object),
-          ],
-        ];
+          );
+          if (open) {
+            for (final object in visible) {
+              widgets.addAll(_objectNode(config, object, depth: 3));
+            }
+          }
+        }
+        if (_filter.isEmpty) widgets.addAll(_routinesFolder(config, schema));
+        return widgets;
       },
     );
   }
@@ -291,31 +296,276 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
   String _objectKey(ConnectionConfig config, DbObject object) =>
       'o:${config.id}:${object.schema}:${object.name}';
 
-  List<Widget> _columnNodes(ConnectionConfig config, DbObject object) {
-    final columns = ref.watch(
-      columnsProvider((config.id, object.schema, object.name)),
-    );
-    return columns.when(
-      loading: () => [const _Loading(depth: 3)],
-      error: (e, _) => [_ErrorRow(depth: 3, error: e)],
-      data: (list) => [
-        for (final column in list)
-          _TreeRow(
-            depth: 3,
-            leading: Icon(
-              column.isPrimaryKey ? Icons.key : Icons.view_column_outlined,
-              size: 14,
-              color: column.isPrimaryKey ? Colors.amber.shade700 : null,
+  /// A table-like object and, when expanded, its Columns/Indexes/… folders.
+  /// [detail] is shown beside the name (used for partition bounds).
+  List<Widget> _objectNode(
+    ConnectionConfig config,
+    DbObject object, {
+    required int depth,
+    String? detail,
+  }) {
+    final key = _objectKey(config, object);
+    final folders = _foldersFor(object.kind);
+    final open = folders.isNotEmpty && _expanded.contains(key);
+    return [
+      _TreeRow(
+        depth: depth,
+        expanded: folders.isEmpty ? null : open,
+        leading: Icon(_objectIcon(object.kind), size: 16),
+        label: object.name,
+        detail: detail,
+        tooltip: detail == null
+            ? object.kind.label
+            : '${object.kind.label}\n$detail',
+        onTap: folders.isEmpty ? null : () => _toggle(key),
+        onDoubleTap: () => _openEditor(
+          config,
+          initialText: 'SELECT * FROM ${_qualified(object)} LIMIT 100;',
+        ),
+      ),
+      if (open)
+        for (final folder in folders)
+          ..._objectFolder(config, object, folder, depth + 1),
+    ];
+  }
+
+  List<Widget> _objectFolder(
+    ConnectionConfig config,
+    DbObject object,
+    _ObjectFolder folder,
+    int depth,
+  ) {
+    final key = '${_objectKey(config, object)}:${folder.name}';
+    final open = _expanded.contains(key);
+    return [
+      _FolderRow(
+        depth: depth,
+        label: folder.label,
+        expanded: open,
+        onTap: () => _toggle(key),
+      ),
+      if (open) ..._folderItems(config, object, folder, depth + 1),
+    ];
+  }
+
+  List<Widget> _folderItems(
+    ConnectionConfig config,
+    DbObject object,
+    _ObjectFolder folder,
+    int depth,
+  ) {
+    final key = (config.id, object.schema, object.name);
+    return switch (folder) {
+      _ObjectFolder.columns => _load(
+        ref.watch(columnsProvider(key)),
+        depth,
+        (list) => [
+          for (final column in list)
+            _TreeRow(
+              depth: depth,
+              leading: Icon(
+                column.isPrimaryKey ? Icons.key : Icons.view_column_outlined,
+                size: 14,
+                color: column.isPrimaryKey ? Colors.amber.shade700 : null,
+              ),
+              label: column.name,
+              detail: '${column.dataType}${column.nullable ? '' : ' not null'}',
+              tooltip: column.defaultValue == null
+                  ? null
+                  : 'default ${column.defaultValue}',
             ),
-            label: column.name,
-            detail: '${column.dataType}${column.nullable ? '' : ' not null'}',
-            tooltip: column.defaultValue == null
-                ? null
-                : 'default ${column.defaultValue}',
-          ),
-      ],
+        ],
+      ),
+      _ObjectFolder.constraints || _ObjectFolder.foreignKeys => _load(
+        ref.watch(constraintsProvider(key)),
+        depth,
+        (list) => [
+          for (final c in list)
+            if ((c.kind == ConstraintKind.foreignKey) ==
+                (folder == _ObjectFolder.foreignKeys))
+              _TreeRow(
+                depth: depth,
+                leading: Icon(
+                  _constraintIcon(c.kind),
+                  size: 14,
+                  color: c.kind == ConstraintKind.primaryKey
+                      ? Colors.amber.shade700
+                      : null,
+                ),
+                label: c.name,
+                detail: c.referencedTable == null
+                    ? c.kind.label
+                    : '→ ${c.referencedTable}',
+                tooltip: c.definition,
+                onDoubleTap: () => _openEditor(
+                  config,
+                  initialText:
+                      'ALTER TABLE ${_qualified(object)}\n'
+                      '  ADD CONSTRAINT ${quoteIdent(c.name)} ${c.definition};',
+                ),
+              ),
+        ],
+      ),
+      _ObjectFolder.indexes => _load(
+        ref.watch(indexesProvider(key)),
+        depth,
+        (list) => [
+          for (final index in list)
+            _TreeRow(
+              depth: depth,
+              leading: Icon(
+                index.isPrimary ? Icons.key : Icons.bolt_outlined,
+                size: 14,
+                color: index.isPrimary ? Colors.amber.shade700 : null,
+              ),
+              label: index.name,
+              detail: [
+                if (index.isUnique && !index.isPrimary) 'unique',
+                ?index.size,
+              ].join(' · '),
+              tooltip: index.definition,
+              onDoubleTap: () =>
+                  _openEditor(config, initialText: '${index.definition};'),
+            ),
+        ],
+      ),
+      _ObjectFolder.triggers => _load(
+        ref.watch(triggersProvider(key)),
+        depth,
+        (list) => [
+          for (final trigger in list)
+            _TreeRow(
+              depth: depth,
+              leading: Icon(
+                Icons.flash_on_outlined,
+                size: 14,
+                color: trigger.enabled ? null : Colors.grey,
+              ),
+              label: trigger.name,
+              detail: trigger.enabled ? null : 'disabled',
+              tooltip: trigger.definition,
+              onDoubleTap: () =>
+                  _openEditor(config, initialText: '${trigger.definition};'),
+            ),
+        ],
+      ),
+      _ObjectFolder.partitions => _load(
+        ref.watch(partitionsProvider(key)),
+        depth,
+        (list) => [
+          for (final partition in list)
+            ..._objectNode(
+              config,
+              partition.object,
+              depth: depth,
+              detail: partition.bound,
+            ),
+        ],
+      ),
+    };
+  }
+
+  List<Widget> _routinesFolder(ConnectionConfig config, String schema) {
+    final key = 'f:${config.id}:$schema:Functions';
+    final open = _expanded.contains(key);
+    final routines = open
+        ? ref.watch(routinesProvider((config.id, schema)))
+        : null;
+    return [
+      _FolderRow(
+        depth: 2,
+        label: 'Functions',
+        count: routines?.value?.length,
+        expanded: open,
+        onTap: () => _toggle(key),
+      ),
+      if (routines != null)
+        ..._load(
+          routines,
+          3,
+          (list) => [
+            for (final routine in list)
+              _TreeRow(
+                depth: 3,
+                leading: Icon(
+                  routine.kind == RoutineKind.procedure
+                      ? Icons.settings_suggest_outlined
+                      : Icons.functions,
+                  size: 14,
+                ),
+                label: '${routine.name}(${routine.arguments})',
+                detail: routine.returnType ?? 'procedure',
+                tooltip: 'Double-click to open the definition',
+                onDoubleTap: () => _openRoutine(config, routine),
+              ),
+          ],
+        ),
+    ];
+  }
+
+  Future<void> _openRoutine(
+    ConnectionConfig config,
+    RoutineInfo routine,
+  ) async {
+    final driver = ref.read(driverProvider(config.id));
+    if (driver == null) return;
+    try {
+      final definition = await driver.routineDefinition(routine);
+      await _openEditor(config, initialText: definition);
+    } on DriverException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
+  }
+
+  /// Loading spinner, error row, "Empty" message, or the built rows.
+  List<Widget> _load<T>(
+    AsyncValue<List<T>> value,
+    int depth,
+    List<Widget> Function(List<T> items) build,
+  ) {
+    return value.when(
+      loading: () => [_Loading(depth: depth)],
+      error: (e, _) => [_ErrorRow(depth: depth, error: e)],
+      data: (items) {
+        final rows = build(items);
+        return rows.isEmpty ? [_Message('Empty', depth: depth)] : rows;
+      },
     );
   }
+
+  String _qualified(DbObject object) =>
+      '${quoteIdent(object.schema)}.${quoteIdent(object.name)}';
+
+  List<_ObjectFolder> _foldersFor(DbObjectKind kind) => switch (kind) {
+    DbObjectKind.table => const [
+      _ObjectFolder.columns,
+      _ObjectFolder.constraints,
+      _ObjectFolder.foreignKeys,
+      _ObjectFolder.indexes,
+      _ObjectFolder.triggers,
+    ],
+    DbObjectKind.partitionedTable => const [
+      _ObjectFolder.columns,
+      _ObjectFolder.constraints,
+      _ObjectFolder.foreignKeys,
+      _ObjectFolder.indexes,
+      _ObjectFolder.triggers,
+      _ObjectFolder.partitions,
+    ],
+    DbObjectKind.view => const [_ObjectFolder.columns, _ObjectFolder.triggers],
+    DbObjectKind.materializedView => const [
+      _ObjectFolder.columns,
+      _ObjectFolder.indexes,
+    ],
+    DbObjectKind.foreignTable => const [
+      _ObjectFolder.columns,
+      _ObjectFolder.constraints,
+    ],
+    DbObjectKind.sequence => const [],
+  };
 
   IconData _objectIcon(DbObjectKind kind) => switch (kind) {
     DbObjectKind.table => Icons.table_chart_outlined,
@@ -323,7 +573,86 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
     DbObjectKind.view => Icons.visibility_outlined,
     DbObjectKind.materializedView => Icons.auto_awesome_motion_outlined,
     DbObjectKind.foreignTable => Icons.link,
+    DbObjectKind.sequence => Icons.pin_outlined,
   };
+
+  IconData _constraintIcon(ConstraintKind kind) => switch (kind) {
+    ConstraintKind.primaryKey => Icons.key,
+    ConstraintKind.unique => Icons.fingerprint,
+    ConstraintKind.check => Icons.rule,
+    ConstraintKind.foreignKey => Icons.call_made,
+    ConstraintKind.exclusion => Icons.block,
+  };
+}
+
+/// Schema-level folders grouping relations by kind, in DBeaver's order.
+class _RelationFolder {
+  const _RelationFolder(this.label, this.kinds, {this.hideWhenEmpty = false});
+
+  final String label;
+  final Set<DbObjectKind> kinds;
+  final bool hideWhenEmpty;
+}
+
+const _relationFolders = [
+  _RelationFolder('Tables', {
+    DbObjectKind.table,
+    DbObjectKind.partitionedTable,
+  }),
+  _RelationFolder('Foreign Tables', {
+    DbObjectKind.foreignTable,
+  }, hideWhenEmpty: true),
+  _RelationFolder('Views', {DbObjectKind.view}),
+  _RelationFolder('Materialized Views', {DbObjectKind.materializedView}),
+  _RelationFolder('Sequences', {DbObjectKind.sequence}),
+];
+
+/// Folders under a table-like object.
+enum _ObjectFolder {
+  columns('Columns'),
+  constraints('Constraints'),
+  foreignKeys('Foreign Keys'),
+  indexes('Indexes'),
+  triggers('Triggers'),
+  partitions('Partitions');
+
+  const _ObjectFolder(this.label);
+
+  final String label;
+}
+
+class _FolderRow extends StatelessWidget {
+  const _FolderRow({
+    required this.depth,
+    required this.label,
+    required this.expanded,
+    required this.onTap,
+    this.count,
+  });
+
+  final int depth;
+  final String label;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  /// Item count, when known.
+  final int? count;
+
+  @override
+  Widget build(BuildContext context) {
+    return _TreeRow(
+      depth: depth,
+      expanded: expanded,
+      leading: Icon(
+        expanded ? Icons.folder_open_outlined : Icons.folder_outlined,
+        size: 16,
+        color: Colors.amber.shade600,
+      ),
+      label: label,
+      detail: count?.toString(),
+      onTap: onTap,
+    );
+  }
 }
 
 /// Quotes a Postgres identifier when it isn't a plain lowercase name.
@@ -366,7 +695,7 @@ class _TreeRow extends StatelessWidget {
       onTap: onTap,
       onDoubleTap: onDoubleTap,
       child: Padding(
-        padding: EdgeInsets.only(left: 4.0 + depth * 16, right: 4),
+        padding: EdgeInsets.only(left: 4.0 + depth * 12, right: 4),
         child: SizedBox(
           height: subtitle == null ? 28 : 44,
           child: Row(
@@ -463,7 +792,7 @@ class _Loading extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(left: 26.0 + depth * 16, top: 6, bottom: 6),
+      padding: EdgeInsets.only(left: 22.0 + depth * 12, top: 6, bottom: 6),
       child: const Align(
         alignment: Alignment.centerLeft,
         child: SizedBox.square(
@@ -485,7 +814,7 @@ class _ErrorRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.only(
-        left: 26.0 + depth * 16,
+        left: 22.0 + depth * 12,
         right: 8,
         top: 4,
         bottom: 4,
@@ -511,7 +840,7 @@ class _Message extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.only(
-        left: 26.0 + depth * 16,
+        left: 22.0 + depth * 12,
         top: 6,
         bottom: 6,
         right: 8,

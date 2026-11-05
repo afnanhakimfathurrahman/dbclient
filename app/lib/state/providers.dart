@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show FutureProviderFamily;
 
 import '../data/app_database.dart';
 import '../data/repositories.dart';
@@ -109,12 +110,48 @@ final objectsProvider =
       },
     );
 
-final columnsProvider =
+/// Identifies a table-like object on a connection.
+typedef RelationKey = (String connectionId, String schema, String object);
+
+/// Builds a provider that loads per-object metadata (columns, indexes…) with
+/// [load] while the connection is open.
+FutureProviderFamily<List<T>, RelationKey> _objectMetadata<T>(
+  Future<List<T>> Function(DatabaseDriver driver, String schema, String object)
+  load,
+) {
+  return FutureProvider.family<List<T>, RelationKey>((ref, key) async {
+    final driver = ref.watch(driverProvider(key.$1));
+    if (driver == null) return const [];
+    return load(driver, key.$2, key.$3);
+  });
+}
+
+final columnsProvider = _objectMetadata((d, s, o) => d.listColumns(s, o));
+final indexesProvider = _objectMetadata((d, s, o) => d.listIndexes(s, o));
+final constraintsProvider = _objectMetadata(
+  (d, s, o) => d.listConstraints(s, o),
+);
+final triggersProvider = _objectMetadata((d, s, o) => d.listTriggers(s, o));
+final partitionsProvider = _objectMetadata((d, s, o) => d.listPartitions(s, o));
+
+final routinesProvider =
     FutureProvider.family<
-      List<ColumnInfo>,
-      (String connectionId, String schema, String object)
+      List<RoutineInfo>,
+      (String connectionId, String schema)
     >((ref, key) async {
       final driver = ref.watch(driverProvider(key.$1));
       if (driver == null) return const [];
-      return driver.listColumns(key.$2, key.$3);
+      return driver.listRoutines(key.$2);
     });
+
+/// Drops all cached metadata for a refresh.
+void invalidateMetadata(WidgetRef ref, String connectionId) {
+  ref.invalidate(schemasProvider(connectionId));
+  ref.invalidate(objectsProvider);
+  ref.invalidate(columnsProvider);
+  ref.invalidate(indexesProvider);
+  ref.invalidate(constraintsProvider);
+  ref.invalidate(triggersProvider);
+  ref.invalidate(partitionsProvider);
+  ref.invalidate(routinesProvider);
+}
