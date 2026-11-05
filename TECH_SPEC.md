@@ -1,213 +1,250 @@
-# DBeaver Web — Technical Specification, Feature Audit & Roadmap
+# DB Client — Technical Specification & Roadmap
 
-**Application Name**: DBeaver Web - Multi-Database Client & SQL IDE  
-**Version**: 1.0.0 (Production Release)  
-**Target Environment**: Cross-Platform Progressive Web App (PWA) & Web Application  
-**Custom Subdomain**: [`dbclient.is-my.app`](https://dbclient.is-my.app)  
-**GitHub Repository**: [github.com/kamaludin68/db-client](https://github.com/kamaludin68/db-client)
+**Working name**: DB Client (final name TBD — avoid "DBeaver", a trademark of DBeaver Corp)
+**Version**: 0.1.0 (pre-release, Flutter rewrite)
+**Platforms**: Windows, macOS, Linux, Android, iOS
+**Stack**: Flutter (Dart) — single codebase, no backend server
+**Repository**: [github.com/kamaludin68/db-client](https://github.com/kamaludin68/db-client)
+**Website**: [`dbclient.is-my.app`](https://dbclient.is-my.app) — landing & download page
 
 ---
 
-## 1. Architecture Overview
+## 1. Product Overview
 
-DBeaver Web is a desktop-grade, client-side database management platform inspired by DBeaver, TablePlus, and DataGrip. It is architected as an offline-first Progressive Web Application (PWA) running on modern Web Standards, featuring a dark-mode user interface, multi-database engine abstraction, a multi-tab workspace, and client-side data management.
+A cross-platform database client (in the spirit of DBeaver, TablePlus, DataGrip) that connects **directly** to real databases from the user's device. There is no hosted backend: all connections, queries, and credentials stay on the device.
 
-### Tech Stack
-- **Core Framework**: React 19 (`react`, `react-dom`)
-- **Language**: TypeScript 5.8+ (Strict Type Checking, No Emit)
-- **Build & Dev Tooling**: Vite 8 (`@vitejs/plugin-react`, `tsx`, `esbuild`)
-- **Styling & Theme**: Tailwind CSS v4 (`@tailwindcss/vite`), custom dark theme palette, monospace typography (`Fira Code`, `Inter`)
-- **PWA & Offline Service Worker**: `vite-plugin-pwa` with Workbox runtime precaching and Web App Manifest
-- **Icons & UI Primitives**: `lucide-react`, custom SVG/Canvas-rendered brand icon assets
-- **Data & Persistence**: `LocalStorage` + `IndexedDB` abstraction via `StorageService`
+### Goals
+- Real TCP connections to PostgreSQL, MySQL, SQLite, ClickHouse, and MongoDB.
+- One codebase for desktop and mobile, with layouts adapted to each form factor.
+- Fast with large result sets (virtualized grid, streamed results).
+- Secure by default: credentials in the OS secure store, TLS and SSH tunneling built in.
+
+### Non-goals (for now)
+- A hosted/web version that connects to remote databases (browsers cannot open TCP sockets).
+- Team features (shared connections, cloud sync, user accounts).
+- Running JDBC drivers. All drivers are native Dart (or Rust via FFI where needed).
+
+---
+
+## 2. Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              DBeaver Web UI                                  │
-├───────────────────────────────┬─────────────────────────────────────────────┤
-│ Top Bar: Brand, Connections,  │ Global Modals:                              │
-│ Drivers, History, PWA Install │ Driver Manager, Connection Wizard, Export   │
-├───────────────────────────────┼─────────────────────────────────────────────┤
-│ Left Pane (Database Tree):    │ Right Pane (Multi-Tab Workspace):           │
-│ • Connections                 │ • SQL & NoSQL Editor Scripts                │
-│ • Schemas & Databases         │ • 7-Tab Table / Object Inspector            │
-│ • Tables & Collections        │ • Visual ER Diagram                         │
-│ • Columns, Indexes, Partitions│ • Execution Plan Visualizer                 │
-├───────────────────────────────┴─────────────────────────────────────────────┤
-│ Services Layer:                                                             │
-│ • QueryEngine (SQL/BSON Parser, Execution Simulator, Cost Optimizer)        │
-│ • StorageService (Persistent State, Catalogs, Drivers, History, Tabs)       │
-│ • PWA Engine (Workbox Service Worker, Offline Caching, Install Prompts)     │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                     Flutter UI (Dart)                        │
+│  Navigator tree · SQL editor · Results grid · Inspector      │
+│  Responsive shell: 3-pane (desktop/tablet) ↔ stacked (phone) │
+├──────────────────────────────────────────────────────────────┤
+│               State layer (Riverpod providers)               │
+│  Connections · Sessions · Tabs · Query history · Settings    │
+├──────────────────────────────────────────────────────────────┤
+│                  Driver layer (DatabaseDriver)               │
+│  PostgresDriver · MySqlDriver · SqliteDriver                 │
+│  ClickHouseDriver (HTTP) · MongoDriver                       │
+├───────────────────────────┬──────────────────────────────────┤
+│  Transport: TCP / TLS     │  SSH tunnel (dartssh2)           │
+├───────────────────────────┴──────────────────────────────────┤
+│  Local storage: drift (SQLite) · flutter_secure_storage      │
+└──────────────────────────────────────────────────────────────┘
+                              │ real network
+                              ▼
+                   User's database servers
+```
+
+### Driver abstraction
+
+Every engine implements one interface so the UI stays engine-agnostic:
+
+```dart
+abstract class DatabaseDriver {
+  DriverCapabilities get capabilities; // sql vs document, schemas, explain, transactions…
+
+  Future<void> connect(ConnectionConfig config);
+  Future<void> close();
+  Future<Duration> ping();
+
+  Future<List<SchemaNode>> listSchemas();
+  Future<List<ObjectNode>> listObjects(String schema); // tables, views, collections
+  Future<ObjectDetails> describe(ObjectRef ref);        // columns, indexes, constraints, partitions
+  Future<String> ddl(ObjectRef ref);
+
+  Stream<ResultBatch> execute(String query, {int batchSize = 500});
+  Future<void> cancel();
+
+  Future<void> begin();
+  Future<void> commit();
+  Future<void> rollback();
+}
+```
+
+- Results are **streamed in batches** so the grid renders the first rows immediately and memory stays bounded.
+- Heavy work (large result decoding, export) runs in a background isolate (`Isolate.run`) to keep the UI at 60 fps.
+- A capability flag set lets the UI hide features an engine doesn't support (e.g. no `EXPLAIN` in MongoDB).
+
+---
+
+## 3. Tech Stack
+
+| Concern | Package | Notes |
+|---|---|---|
+| Framework | Flutter (stable) | Dart 3.x |
+| State management | `flutter_riverpod` | |
+| Routing | `go_router` | |
+| Local app database | `drift` + `sqlite3_flutter_libs` | Connections (no secrets), history, saved scripts, settings |
+| Secrets | `flutter_secure_storage` | Keychain (iOS/macOS), Keystore (Android), Credential Locker (Windows), libsecret (Linux) |
+| SQL editor | `re_editor` | Syntax highlighting, large files, custom autocomplete |
+| Results grid | `two_dimensional_scrollables` (or `trina_grid`) | Virtualized rows and columns |
+| SSH tunnels | `dartssh2` | Password and private key auth |
+| HTTP | `dio` | ClickHouse HTTP interface |
+| File pick/save | `file_selector` | Import, export, open SQLite files |
+| Window management (desktop) | `window_manager` | Remember size and position |
+
+### Database drivers
+
+| Engine | Package | Maturity | Notes |
+|---|---|---|---|
+| PostgreSQL | `postgres` (v3) | Solid | TLS, extended protocol, streaming |
+| SQLite | `sqlite3` | Solid | Open local `.db`/`.sqlite` files |
+| MySQL / MariaDB | `mysql_client` | Good | |
+| ClickHouse | HTTP interface via `dio` | Good | `FORMAT JSONEachRow` for streaming |
+| MongoDB | `mongo_dart` | Fair | Community-maintained; may lag on newer server features |
+
+**Fallback**: if a Dart driver proves too limited (most likely MongoDB), wrap the Rust driver through `flutter_rust_bridge` behind the same `DatabaseDriver` interface. The UI does not change.
+
+---
+
+## 4. Feature Scope
+
+### MVP (v0.1)
+- **Connections**: create, edit, delete, test. Host/port/user/password/database, TLS mode, color tag.
+- **Navigator tree**: connection → schemas → tables/views → columns, with a filter box.
+- **SQL editor**: multiple tabs, syntax highlighting, run statement under cursor (`Ctrl/Cmd+Enter`), run whole script, cancel a running query.
+- **Results grid**: virtualized, sortable, column resize, copy cells/rows, NULL display, value viewer for JSON/long text.
+- **Query history**: per connection, with duration and row count, click to re-open.
+- **Engine**: PostgreSQL only.
+- **Platform**: Windows desktop.
+
+### v0.2
+- Engines: SQLite, MySQL.
+- Table inspector: columns, indexes, constraints, DDL.
+- Export results: CSV, JSON, SQL INSERT, Markdown.
+- SSH tunneling.
+- Android build with a phone layout.
+
+### v0.3
+- Engines: ClickHouse, MongoDB (document view + JSON editor).
+- Schema-aware autocomplete (tables, columns, aliases).
+- Inline editing in the grid with staged changes: modified/inserted/deleted rows highlighted, **Commit (N)** / **Rollback** bar.
+- `EXPLAIN` plan view (PostgreSQL, MySQL, ClickHouse).
+- macOS, Linux, iOS builds via CI.
+
+### Later
+- ER diagram (interactive, export PNG/SVG).
+- Visual table designer generating `ALTER` scripts.
+- CSV/JSON import wizard with column mapping.
+- Partitions view, binary/BLOB viewer.
+- Optional encrypted export/import of connection list for moving between devices.
+
+---
+
+## 5. UI & Responsive Layout
+
+| Width | Layout |
+|---|---|
+| ≥ 1000 px (desktop, large tablet) | Three panes: navigator · editor/inspector tabs · results (resizable splitters) |
+| 600–999 px (small tablet, narrow window) | Collapsible navigator drawer, editor and results stacked |
+| < 600 px (phone) | Bottom navigation: Connections → Objects → Editor → Results, one screen at a time |
+
+- Dark and light themes, following the system setting by default.
+- Keyboard shortcuts on desktop. Touch-friendly targets (≥ 48 px) on mobile.
+- Monospace font for editor and grid (bundled, e.g. JetBrains Mono or Fira Code).
+
+---
+
+## 6. Security
+
+- Passwords, SSH keys, and passphrases are stored **only** in `flutter_secure_storage`. The drift database stores a reference key, never the secret.
+- TLS modes per connection: disable / require / verify-ca / verify-full. Custom CA certificate upload.
+- SSH tunnel host key verification with fingerprint confirmation on first connect.
+- Optional "ask for password every time" per connection.
+- No telemetry and no network traffic except to the user's own databases.
+
+---
+
+## 7. Platform Notes
+
+| Platform | Notes |
+|---|---|
+| Windows | Build on this machine. Requires Visual Studio Build Tools (C++ workload). |
+| Android | Build on this machine. Requires Android SDK. Needs the `INTERNET` permission. Cleartext traffic only for explicitly non-TLS connections. |
+| Linux | Build in CI (Ubuntu runner) or WSL. Needs `libsecret` for secure storage. |
+| macOS | Build in CI (macOS runner) or on a Mac. Requires the network client entitlement (`com.apple.security.network.client`). |
+| iOS | Build in CI (macOS runner) or on a Mac. Requires an Apple Developer account to distribute. |
+
+**Mobile lifecycle**: iOS and Android suspend backgrounded apps and drop sockets. The connection manager must detect dead connections and reconnect transparently on resume, without losing editor content.
+
+---
+
+## 8. Project Structure
+
+The Flutter app lives in `app/`. The previous React prototype stays at the repo root as a design reference until the Flutter app reaches feature parity, then it is removed.
+
+```
+app/
+  lib/
+    main.dart
+    app/                 # app shell, routing, theme
+    core/                # shared utilities, errors, logging
+    data/                # drift database, repositories, secure storage
+    drivers/
+      driver.dart        # DatabaseDriver interface, shared models
+      postgres/
+      mysql/
+      sqlite/
+      clickhouse/
+      mongo/
+    features/
+      connections/
+      navigator/
+      editor/
+      results/
+      inspector/
+      history/
+      export/
+  test/
+  integration_test/
 ```
 
 ---
 
-## 2. Implemented Features (Working Functionality)
+## 9. Testing
 
-The following capabilities are fully built, tested, and operational in the application:
-
-### A. Core Database Support (Default Capability)
-- **PostgreSQL 16**:
-  - Multi-schema support (`public`, `analytics`).
-  - Heap tables with typed columns, serial sequences, nullability, defaults, and comments.
-  - Secondary Indexes: B-Tree, GIN (JSONB attributes), Composite indexes.
-  - Partitioned tables: Quarterly range partitioning on `payment_transactions` (`payments_2024_q1` to `q4`).
-  - Constraint definitions: `PRIMARY KEY`, `FOREIGN KEY` (with cascade actions), `CHECK` constraints, `UNIQUE` constraints.
-- **MongoDB 7.0**:
-  - Document collections (`customers`, `events_stream`).
-  - BSON / JSON document model, document counts, and nested object inspection.
-  - Multi-key and compound indexes, text indexes, 30-day TTL indexes (`createdAt_ttl`).
-  - Schema validators (`$jsonSchema`).
-- **ClickHouse 24.3**:
-  - Columnar analytical tables (`pageviews_mergetree`).
-  - `MergeTree()` engine with `toYYYYMM(event_date)` partition key.
-  - Column compression codecs: `ZSTD(3)`, `DoubleDelta`.
-  - Sorting keys (`ORDER BY`) and Primary keys.
-
-### B. Extensible Driver Manager ("Download Driver First")
-- **Pre-installed Core Drivers**: PostgreSQL JDBC, MongoDB Java Driver, ClickHouse Native JDBC.
-- **Downloadable Driver Marketplace**:
-  - MySQL Connector/J (`mysql`)
-  - SQLite JDBC (`sqlite`)
-  - Redis RESP3 Client (`redis`)
-  - Apache Cassandra CQL (`cassandra`)
-  - Snowflake JDBC (`snowflake`)
-  - DuckDB In-Memory OLAP (`duckdb`)
-  - Oracle JDBC (`oracle`)
-  - Microsoft SQL Server (`sqlserver`)
-- **Driver Download Flow**: Simulated package download with real-time percentage progress bar, SHA verification, and instant activation.
-- **Custom Driver Registration**: Form to register custom JDBC drivers with custom protocol URL templates, driver classes, default ports, and engine categories.
-
-### C. Database Navigator Tree
-- DBeaver-style hierarchical explorer:
-  - Connection Node (color tag dot, status indicator, latency ping, context menu).
-  - Schemas / Databases.
-  - Tables & Collections with child folders:
-    - **Columns**: icons for Primary Key, Foreign Key, data types.
-    - **Indexes**: icons for Unique, BTree, GIN, Compound.
-    - **Partitions**: partition expressions and range bounds.
-    - **Constraints**: PK, FK, Check, and Unique rules.
-- Fast object filter search input that searches tables and columns in real-time.
-- Node expansion, collapse all, and quick-open SQL console actions.
-
-### D. Deep Table & Object Inspector (7 Views)
-1. **Data Grid**: Tabular spreadsheet view with column type headers, sortable columns, row selection, insert row, delete row, and cell inspector modal (JSON/text formatting).
-2. **Columns Tab**: Name, data type, primary/foreign key badges, nullability, default values, compression codecs, and comments.
-3. **Indexes Tab**: Name, type (`BTREE`, `GIN`, `COMPOUND`, `ORDER_BY`, `TTL`), uniqueness, indexed columns, and storage size.
-4. **Partitions Tab**: Partition names, expressions, value bounds, row counts, and storage footprints.
-5. **Constraints Tab**: Primary Keys, Foreign Keys (with referenced tables and cascade actions), Check expressions, and Unique constraints.
-6. **DDL / Source Tab**: Dynamically generated, syntax-highlighted `CREATE TABLE` and index creation statements with one-click copy.
-7. **ER Diagram Tab**: Interactive schema relationship graph showing active tables, PK/FK connection lines, and cardinality.
-
-### E. Built-in SQL & NoSQL Query Editor
-- Multi-tab script management (`Script-1.sql`, `Script-2.sql`, etc.).
-- Line numbers with active line indicator.
-- Keyboard shortcut: <kbd>Ctrl</kbd> + <kbd>Enter</kbd> / <kbd>Cmd</kbd> + <kbd>Enter</kbd> to execute queries.
-- **Explain Plan**: Visual hierarchical query plan tree displaying startup and total costs, execution times, filters, and index scan nodes.
-- **SQL Formatter**: Aligns standard SQL keywords (`SELECT`, `FROM`, `WHERE`, `JOIN`, `GROUP BY`, `ORDER BY`).
-- **Query Snippets Library**: Pre-built templates for multi-table JOINs, partition pruning queries, ClickHouse columnar aggregates, and MongoDB `.find()` / `.countDocuments()`.
-- **Query Execution History**: Persistent log of past queries with duration in milliseconds, row counts, and one-click re-run.
-
-### F. Data Export Tools
-- Multi-format exporter: **CSV**, **JSON**, **SQL INSERTs**, **Markdown tables**, **TSV (Excel)**, and **HTML**.
-- Configuration options: custom delimiters (comma, semicolon, tab, pipe), header toggle, string quoting options.
-- Direct file download with auto-generated filenames and "Copy to Clipboard" with live 4-row preview.
-
-### G. PWA & Offline Support
-- Service worker generated via `vite-plugin-pwa` with precached app shell and offline fallback.
-- Standard resolutions: `192x192`, `512x512`, `512x512 maskable`, `apple-touch-icon.png`, and `icon.svg`.
-- In-app install button (`PWAInstallButton`) with Chromium beforeinstallprompt handling and iOS Safari installation guidance.
-- Offline status indicator banner that alerts the user when network connectivity changes.
-- Persistent local storage: custom connections, downloaded drivers, query history, saved scripts, and data modifications remain preserved offline.
+- **Unit tests**: SQL statement splitting, export formatters, result model conversions.
+- **Driver integration tests**: run against real databases in Docker (`docker compose` with Postgres, MySQL, ClickHouse, MongoDB). Run locally and in CI.
+- **Widget tests**: connection form validation, grid rendering, layout breakpoints.
+- **Manual checklist** per release on each platform: connect, browse, query, cancel, export, reconnect after suspend (mobile).
 
 ---
 
-## 3. What Functions Are NOT Working Yet (Limitations & Simulation)
+## 10. Build & Release
 
-Because DBeaver Web currently runs 100% inside a standard browser sandbox as a client-side PWA, certain low-level desktop features operate in simulation mode:
-
-### 1. Direct Raw TCP Sockets to Remote Databases
-- **Current Behavior**: The connection wizard and query engine execute against rich, client-side database catalogs and in-memory query parsers.
-- **Limitation**: Web browsers security sandboxes do NOT permit opening arbitrary raw TCP sockets (e.g. TCP port `5432` for PostgreSQL or `27017` for MongoDB). Direct connection requires either:
-  - An HTTP/REST interface (e.g., ClickHouse HTTP API, PostgREST, MongoDB Atlas Data API).
-  - A lightweight local or cloud WebSocket Proxy daemon (`dbeaver-web-proxy`).
-
-### 2. Native Java Driver Execution (`.jar` JVM)
-- **Current Behavior**: When a user "downloads" a driver (e.g., MySQL, Redis, Snowflake), the application registers the driver metadata, classes, ports, and configuration in persistent storage and unlocks connection creation.
-- **Limitation**: The browser cannot execute compiled Java bytecode (`.class`/`.jar` files) natively. True in-browser execution requires compiling database clients to WebAssembly (WASM).
-
-### 3. Visual Table Alter / Schema Migration Tool
-- **Current Behavior**: Users can view generated DDL (`CREATE TABLE ...`) and inspect existing constraints and partitions.
-- **Limitation**: There is no interactive visual GUI to edit an existing table's schema (e.g. `ALTER TABLE ADD COLUMN`, `DROP CONSTRAINT`) with automatic migration script generation.
-
-### 4. Large Dataset Virtualization (> 100,000 Rows)
-- **Current Behavior**: The Data Grid renders up to thousands of records smoothly using standard HTML table markup and pagination.
-- **Limitation**: For queries returning 100,000+ rows, the DOM may suffer performance degradation without windowed virtual scrolling (e.g. TanStack Virtual or ag-grid).
-
-### 5. Multi-Statement Transaction Commit/Rollback Bar
-- **Current Behavior**: Inserting and deleting rows immediately updates the in-memory catalog.
-- **Limitation**: There is no staged "Dirty Rows" buffer with a pending commit bar (like DBeaver's bottom `Save / Revert` transaction buttons) that requires explicit `COMMIT` or `ROLLBACK`.
+- **CI**: GitHub Actions matrix — `windows-latest`, `ubuntu-latest`, `macos-latest`. Runs `flutter analyze`, tests, and builds artifacts.
+- **Desktop distribution**: Windows MSIX or installer, macOS DMG (signed + notarized), Linux AppImage or `.deb`.
+- **Mobile distribution**: Google Play (AAB), Apple App Store / TestFlight.
+- **Website**: `dbclient.is-my.app` on GitHub Pages becomes a static landing page with download links.
 
 ---
 
-## 4. Prioritized TODO List & Roadmap
+## 11. Current Status
 
-### Phase 1: Real In-Browser Database Engines (Immediate Priority)
-- [ ] **PGlite Integration (`@electric-sql/pglite`)**:
-  - Embed the real PostgreSQL database engine compiled to WebAssembly inside the PWA.
-  - Allows users to create real, 100% functional local PostgreSQL databases with real SQL parsing, ACID transactions, and full syntax right inside IndexedDB!
-- [ ] **DuckDB-WASM Integration (`@duckdb/duckdb-wasm`)**:
-  - Add native client-side analytical querying for Parquet, CSV, and Arrow files with lightning-fast columnar execution in browser workers.
-- [ ] **ClickHouse HTTP Interface**:
-  - Connect to real ClickHouse clusters using ClickHouse's native HTTP/HTTPS interface (`POST /?query=...`) with CORS headers.
-- [ ] **MongoDB Data API / Atlas App Services**:
-  - Wire the MongoDB console to real remote MongoDB Atlas clusters using the HTTPS Data API.
-
-### Phase 2: Companion WebSocket Proxy Daemon
-- [ ] **Develop `dbeaver-web-proxy`**:
-  - A tiny single-binary daemon (in Go or Node.js) that users can run locally (`npx dbeaver-web-proxy`):
-  - Bridges browser WebSocket connections directly to raw TCP ports:
-    - Postgres: `ws://localhost:8080/pg` -> `tcp://localhost:5432`
-    - MySQL: `ws://localhost:8080/mysql` -> `tcp://localhost:3306`
-    - Mongo: `ws://localhost:8080/mongo` -> `tcp://localhost:27017`
-    - Redis: `ws://localhost:8080/redis` -> `tcp://localhost:6379`
-  - Unlocks 100% genuine raw database connections identical to the desktop DBeaver application.
-
-### Phase 3: Advanced SQL Editor & Autocompletion
-- [ ] **Monaco Editor / CodeMirror 6 Migration**:
-  - Replace current textarea with full Monaco Editor.
-  - Schema-aware intelligent autocompletion (IntelliSense) for tables, columns, aliases, and SQL keywords.
-  - Multi-cursor editing, bracket matching, and query folding.
-- [ ] **Multi-Statement Execution**:
-  - Execute statement under cursor (<kbd>Ctrl</kbd> + <kbd>Enter</kbd>) vs execute entire script (<kbd>Alt</kbd> + <kbd>X</kbd>).
-  - Display multiple result tabs for scripts containing multiple `SELECT` statements.
-
-### Phase 4: Data Grid Enhancements & Transactions
-- [ ] **Virtualized Viewport**:
-  - Implement `@tanstack/react-virtual` for handling 1,000,000+ rows with constant 60fps scrolling and negligible memory footprint.
-- [ ] **Staged Transaction Management**:
-  - Highlight modified, inserted, and deleted cells in yellow/green/red.
-  - Show a persistent bottom bar with `Commit (N changes)` and `Rollback` buttons.
-- [ ] **Binary / Blob Viewer**:
-  - Cell inspector for viewing images, base64 data, hex view, and formatted JSON/XML trees.
-
-### Phase 5: Visual Schema Designer & Import Wizard
-- [ ] **Visual Table Designer**:
-  - GUI to create and alter tables, add indexes, and define foreign key relationships visually.
-- [ ] **Interactive Drag & Drop ERD Canvas**:
-  - Upgrade ER Diagram to an interactive canvas (using React Flow or HTML5 Canvas) where tables can be rearranged, linked, and exported as PNG/SVG.
-- [ ] **CSV / JSON Data Import Wizard**:
-  - Complement the export tools with a multi-step Import Wizard to upload CSV/JSON files into existing database tables with column mapping and type coercion.
+- The existing React/Vite PWA at the repo root is a **UI prototype only**. It does not connect to any database: queries run against hardcoded sample data, and connection tests and driver downloads are simulated.
+- The Flutter app has not been started yet.
+- Dev environment (Windows): Flutter SDK installed; Visual Studio Build Tools and Android Studio being installed.
 
 ---
 
-## 5. Deployment & Domain Verification
+## 12. Open Decisions
 
-| Target | Configuration | Status |
-| :--- | :--- | :--- |
-| **PWA Service Worker** | `dist/sw.js` via Workbox | Active |
-| **Web App Manifest** | `dist/manifest.webmanifest` (`id: '/'`, `display: 'standalone'`) | Active |
-| **GitHub Pages Branch** | `gh-pages` | Deployed |
-| **Custom Domain CNAME** | `dbclient.is-my.app` -> `kamaludin68.github.io` | Merged via PR #42 |
-| **DNS Status** | Registered on `is-my.app` edge | Active |
+- Final product name.
+- Grid package: `two_dimensional_scrollables` (more control, more work) vs `trina_grid` (more built-in features).
+- MongoDB: start with `mongo_dart`, or go straight to a Rust driver via `flutter_rust_bridge`.
+- Licensing: open source (which license) or closed.
