@@ -75,12 +75,6 @@ class _TabStrip extends ConsumerWidget {
               ],
             ),
           ),
-          IconButton(
-            tooltip: 'New SQL editor (Ctrl+N)',
-            icon: const Icon(Icons.add, size: 18),
-            onPressed: () => notifier.open(state.active!.connectionId),
-          ),
-          const SizedBox(width: 4),
         ],
       ),
     );
@@ -825,7 +819,11 @@ class SqlEditor extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final dark = theme.brightness == Brightness.dark;
+    final codeTheme =
+        theme.extension<SqlCodeTheme>()?.styles ??
+        (theme.brightness == Brightness.dark
+            ? atomOneDarkTheme
+            : atomOneLightTheme);
     return CodeEditor(
       controller: controller,
       autofocus: !readOnly,
@@ -840,7 +838,7 @@ class SqlEditor extends StatelessWidget {
         backgroundColor: theme.colorScheme.surface,
         codeTheme: CodeHighlightTheme(
           languages: {'pgsql': CodeHighlightThemeMode(mode: langPgsql)},
-          theme: dark ? atomOneDarkTheme : atomOneLightTheme,
+          theme: codeTheme,
         ),
       ),
       indicatorBuilder:

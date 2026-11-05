@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/theme.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
 import '../connections/connection_dialog.dart';
@@ -67,15 +68,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                   icon: const Icon(Icons.add_circle_outline_rounded),
                   onPressed: _handleNewQuery,
                 ),
-                IconButton(
-                  tooltip: 'Toggle theme',
-                  icon: Icon(
-                    theme.brightness == Brightness.dark
-                        ? Icons.light_mode_outlined
-                        : Icons.dark_mode_outlined,
-                  ),
-                  onPressed: () => ref.read(themeModeProvider.notifier).toggle(),
-                ),
+                const _ThemePicker(),
                 const SizedBox(width: 4),
               ],
             ),
@@ -139,7 +132,6 @@ class _DesktopTopBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
 
     final connections = ref.watch(connectionsProvider).value ?? const [];
     final activeTab = ref.watch(workspaceTabsProvider).active;
@@ -293,15 +285,7 @@ class _DesktopTopBar extends ConsumerWidget {
           ),
           const SizedBox(width: 10),
 
-          // Theme Switcher Toggle
-          IconButton(
-            tooltip: isDark ? 'Switch to Light Theme' : 'Switch to Dark Theme',
-            icon: Icon(
-              isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-              size: 18,
-            ),
-            onPressed: () => ref.read(themeModeProvider.notifier).toggle(),
-          ),
+          const _ThemePicker(iconSize: 18),
         ],
       ),
     );
@@ -365,6 +349,74 @@ class _SplitterState extends State<_Splitter> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Theme menu: each preset with a swatch of its background and accent.
+class _ThemePicker extends ConsumerWidget {
+  const _ThemePicker({this.iconSize});
+
+  final double? iconSize;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final current = ref.watch(appThemeProvider);
+    return PopupMenuButton<AppThemePreset>(
+      tooltip: 'Theme',
+      icon: Icon(Icons.palette_outlined, size: iconSize),
+      initialValue: current,
+      onSelected: ref.read(appThemeProvider.notifier).select,
+      itemBuilder: (context) => [
+        for (final preset in AppThemePreset.values)
+          PopupMenuItem(
+            value: preset,
+            height: 38,
+            child: Row(
+              children: [
+                _Swatch(buildThemeForPreset(preset).colorScheme),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(preset.label, style: const TextStyle(fontSize: 13)),
+                ),
+                if (preset == current) ...[
+                  const SizedBox(width: 10),
+                  Icon(
+                    Icons.check_rounded,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ],
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _Swatch extends StatelessWidget {
+  const _Swatch(this.scheme);
+
+  final ColorScheme scheme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 22,
+      height: 16,
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+      ),
+      alignment: Alignment.bottomRight,
+      padding: const EdgeInsets.all(3),
+      child: Container(
+        width: 7,
+        height: 7,
+        decoration: BoxDecoration(color: scheme.primary, shape: BoxShape.circle),
       ),
     );
   }
