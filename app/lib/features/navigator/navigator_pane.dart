@@ -144,8 +144,10 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
                 hintText: 'Filter schemas, tables...',
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 suffixIcon: _filter.isEmpty
                     ? null
                     : IconButton(
@@ -771,71 +773,89 @@ class _TreeRow extends StatelessWidget {
             },
       child: Padding(
         padding: EdgeInsets.only(left: 4.0 + depth * 12, right: 6),
-        child: SizedBox(
-          height: subtitle == null ? 28 : 44,
-          child: Row(
-            children: [
-              SizedBox(
-                width: 18,
-                child: expanded == null
-                    ? null
-                    : Icon(
-                        expanded! ? Icons.expand_more : Icons.chevron_right,
-                        size: 16,
-                      ),
-              ),
-              leading,
-              const SizedBox(width: 6),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      label,
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                      style: const TextStyle(fontSize: 13),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final maxDetailWidth = constraints.maxWidth * 0.45;
+            return SizedBox(
+              height: subtitle == null ? 28 : 44,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 18,
+                    child: expanded == null
+                        ? null
+                        : Icon(
+                            expanded! ? Icons.expand_more : Icons.chevron_right,
+                            size: 16,
+                          ),
+                  ),
+                  leading,
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          label,
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                        if (subtitle != null)
+                          Text(
+                            subtitle!,
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 11,
+                            ),
+                          ),
+                      ],
                     ),
-                    if (subtitle != null)
-                      Text(
-                        subtitle!,
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                          fontSize: 11,
+                  ),
+                  if (detail != null)
+                    // Badges (types, partition bounds) can be long; capped so a
+                    // narrow sidebar truncates them instead of overflowing.
+                    ConstrainedBox(
+                      constraints: BoxConstraints(maxWidth: maxDetailWidth),
+                      child: Tooltip(
+                        message: detail!,
+                        waitDuration: const Duration(milliseconds: 600),
+                        child: Container(
+                          margin: const EdgeInsets.only(left: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest
+                                .withValues(alpha: 0.4),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: theme.colorScheme.outlineVariant
+                                  .withValues(alpha: 0.6),
+                            ),
+                          ),
+                          child: Text(
+                            detail!,
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                            style: monoBadgeStyle.copyWith(
+                              fontSize: 10,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
                         ),
                       ),
-                  ],
-                ),
+                    ),
+                  ?trailing,
+                ],
               ),
-              if (detail != null)
-                Container(
-                  margin: const EdgeInsets.only(left: 4),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest
-                        .withValues(alpha: 0.4),
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: theme.colorScheme.outlineVariant
-                          .withValues(alpha: 0.6),
-                    ),
-                  ),
-                  child: Text(
-                    detail!,
-                    overflow: TextOverflow.ellipsis,
-                    style: monoBadgeStyle.copyWith(
-                      fontSize: 10,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-              ?trailing,
-            ],
-          ),
+            );
+          },
         ),
       ),
     );
@@ -979,11 +999,7 @@ class _EmptyConnections extends StatelessWidget {
                 color: scheme.primary.withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
-              child: Icon(
-                Icons.dns_rounded,
-                size: 32,
-                color: scheme.primary,
-              ),
+              child: Icon(Icons.dns_rounded, size: 32, color: scheme.primary),
             ),
             const SizedBox(height: 14),
             Text(
