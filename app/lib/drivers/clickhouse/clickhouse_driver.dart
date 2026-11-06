@@ -36,6 +36,12 @@ class ClickHouseDriver implements SqlDriver {
   String? _runningQueryId;
   http.Client? _runningClient;
 
+  /// Keep-alive client for metadata, pings and KILL, so they reuse one
+  /// connection instead of paying a TCP and TLS handshake each. Editor
+  /// statements get a client of their own: closing it is how [cancel] and
+  /// the row limit abort a response mid-stream.
+  http.Client? _sharedClient;
+
   bool get _tls => config.tlsMode != TlsMode.disable;
 
   http.Client _newClient() {
@@ -77,6 +83,8 @@ class ClickHouseDriver implements SqlDriver {
   Future<void> close() async {
     _connected = false;
     _runningClient?.close();
+    _sharedClient?.close();
+    _sharedClient = null;
   }
 
   @override
@@ -93,14 +101,16 @@ class ClickHouseDriver implements SqlDriver {
     Map<String, String> params = const {},
     bool inSession = false,
     int maxRows = 1 << 30,
+    int maxBytes = 1 << 50,
   }) async {
     final queryId = const Uuid().v4();
-    final client = _newClient();
+    final client = inSession ? _newClient() : (_sharedClient ??= _newClient());
     if (inSession) {
       _runningQueryId = queryId;
       _runningClient = client;
     }
     final watch = Stopwatch()..start();
+    Future<void>? killing;
     try {
       final request =
           http.Request(
@@ -131,14 +141,15 @@ class ClickHouseDriver implements SqlDriver {
         );
       }
 
-      final parser = ClickHouseRowsParser(maxRows: maxRows);
+      final parser = ClickHouseRowsParser(maxRows: maxRows, maxBytes: maxBytes);
       final lines = response.stream
           .transform(utf8.decoder)
           .transform(const LineSplitter());
       await for (final line in lines) {
         if (!parser.add(line)) {
-          // Row limit reached: drop the connection and stop the query.
-          if (inSession) unawaited(_kill(queryId));
+          // Row or memory limit reached: drop the connection and stop the
+          // query.
+          if (inSession) killing = _kill(queryId);
           break;
         }
       }
@@ -163,7 +174,9 @@ class ClickHouseDriver implements SqlDriver {
       }
       throw DriverException(e.message);
     } finally {
-      client.close();
+      if (inSession) client.close();
+      // Finish the KILL before returning so it can't race the next statement.
+      await killing;
       if (inSession && _runningQueryId == queryId) {
         _runningQueryId = null;
         _runningClient = null;
@@ -187,7 +200,7 @@ class ClickHouseDriver implements SqlDriver {
         'KILL QUERY WHERE query_id = {id:String} ASYNC',
         params: {'id': queryId},
       );
-    } on DriverException {
+    } catch (_) {
       // Best effort: the query may already have finished.
     }
   }
@@ -195,7 +208,12 @@ class ClickHouseDriver implements SqlDriver {
   @override
   Future<QueryResult> execute(String sql, {int maxRows = 10000}) {
     if (!_connected) throw const DriverException('Not connected');
-    return _query(sql, inSession: true, maxRows: maxRows);
+    return _query(
+      sql,
+      inSession: true,
+      maxRows: maxRows,
+      maxBytes: maxResultBytes,
+    );
   }
 
   /// ClickHouse has no multi-statement transactions: statements run in
@@ -340,15 +358,18 @@ class ClickHouseDriver implements SqlDriver {
 /// Parses `JSONCompactEachRowWithNamesAndTypes` output line by line: a row
 /// of names, a row of types, then one JSON array per row.
 class ClickHouseRowsParser {
-  ClickHouseRowsParser({required this.maxRows});
+  ClickHouseRowsParser({required int maxRows, int maxBytes = maxResultBytes})
+    : _budget = RowBudget(maxRows: maxRows, maxBytes: maxBytes);
 
-  final int maxRows;
+  final RowBudget _budget;
+  int get maxRows => _budget.maxRows;
   List<String>? _names;
   List<ResultColumn> columns = const [];
   final rows = <List<Object?>>[];
   bool truncated = false;
 
-  /// Consumes a line; false once the row limit is exceeded (stop reading).
+  /// Consumes a line; false once the row or memory limit is exceeded (stop
+  /// reading).
   /// Throws [DriverException] when the server reports an error mid-stream.
   bool add(String line) {
     if (line.isEmpty) return true;
@@ -376,11 +397,12 @@ class ClickHouseRowsParser {
       ];
       return true;
     }
-    if (rows.length >= maxRows) {
+    if (_budget.full) {
       truncated = true;
       return false;
     }
     rows.add(decoded);
+    _budget.add(decoded);
     return true;
   }
 }

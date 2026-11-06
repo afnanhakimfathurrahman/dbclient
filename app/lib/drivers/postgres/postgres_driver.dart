@@ -464,19 +464,23 @@ class PostgresDriver implements SqlDriver {
   Future<QueryResult> execute(String sql, {int maxRows = 10000}) async {
     final watch = Stopwatch()..start();
     final rows = <List<Object?>>[];
+    final budget = RowBudget(maxRows: maxRows);
     var truncated = false;
+    Future<void>? cancelling;
 
     return _guard(() async {
       final statement = await _queryConn.prepare(sql);
       try {
         final subscription = statement.bind(null).listen((row) {
-          if (rows.length < maxRows) {
-            rows.add([for (final value in row) _convert(value)]);
+          if (!budget.full) {
+            final values = [for (final value in row) _convert(value)];
+            rows.add(values);
+            budget.add(values);
           } else if (!truncated) {
             // Stop the server from sending the rest instead of downloading
             // rows we would throw away.
             truncated = true;
-            unawaited(_cancelBackend().catchError((_) {}));
+            cancelling = _cancelBackend().catchError((_) {});
           }
         });
         try {
@@ -495,6 +499,8 @@ class PostgresDriver implements SqlDriver {
           truncated: truncated,
         );
       } finally {
+        // A cancel still in flight would interrupt the next statement.
+        await cancelling;
         await statement.dispose().catchError((_) {});
       }
     });

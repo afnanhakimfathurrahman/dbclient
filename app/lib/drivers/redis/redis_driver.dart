@@ -9,7 +9,8 @@ import 'resp.dart';
 /// One Redis connection with pipelining: commands are written immediately
 /// and replies matched to them in order.
 class RedisConnection {
-  RedisConnection._(this._socket) {
+  RedisConnection._(this._socket, {int? maxArrayItems})
+    : _parser = RespParser(maxArrayItems: maxArrayItems) {
     _socket.listen(
       (data) {
         for (final reply in _parser.add(data)) {
@@ -21,7 +22,12 @@ class RedisConnection {
     );
   }
 
-  static Future<RedisConnection> open(ConnectionConfig config) async {
+  /// [maxArrayItems] caps the elements kept per reply array (see
+  /// [RespParser]).
+  static Future<RedisConnection> open(
+    ConnectionConfig config, {
+    int? maxArrayItems,
+  }) async {
     try {
       final socket = config.tlsMode == TlsMode.disable
           ? await Socket.connect(
@@ -37,7 +43,7 @@ class RedisConnection {
               onBadCertificate: (_) => config.tlsMode == TlsMode.require,
             );
       socket.setOption(SocketOption.tcpNoDelay, true);
-      return RedisConnection._(socket);
+      return RedisConnection._(socket, maxArrayItems: maxArrayItems);
     } on SocketException catch (e) {
       throw DriverException(
         'Cannot reach ${config.host}:${config.port} — '
@@ -49,7 +55,7 @@ class RedisConnection {
   }
 
   final Socket _socket;
-  final _parser = RespParser();
+  final RespParser _parser;
   final _pending = Queue<Completer<Object?>>();
   DriverException? _closed;
 
@@ -92,11 +98,24 @@ class RedisDriver implements KeyValueDriver {
   RedisConnection? _console;
   int _consoleDb = 0;
 
+  /// Elements kept per array in a console reply (KEYS *, HGETALL…); the
+  /// rest are read and dropped. Browsing only sends bounded commands.
+  static const consoleMaxArrayItems = 10000;
+
+  /// String values longer than this are read in part (GETRANGE).
+  static const stringPreviewBytes = 256 * 1024;
+
+  /// JSON documents using more memory than this aren't fetched.
+  static const jsonMaxMemoryBytes = 2 * 1024 * 1024;
+
   int get _defaultDb => int.tryParse(config.database) ?? 0;
 
   /// Opens, authenticates and selects the default database.
-  Future<RedisConnection> _open() async {
-    final connection = await RedisConnection.open(config);
+  Future<RedisConnection> _open({int? maxArrayItems}) async {
+    final connection = await RedisConnection.open(
+      config,
+      maxArrayItems: maxArrayItems,
+    );
     try {
       if (_password?.isNotEmpty ?? false) {
         _check(
@@ -191,7 +210,7 @@ class RedisDriver implements KeyValueDriver {
   Future<Object?> console(int db, List<String> args) async {
     var connection = _console;
     if (connection == null) {
-      connection = _console = await _open();
+      connection = _console = await _open(maxArrayItems: consoleMaxArrayItems);
       _consoleDb = _defaultDb;
     }
     if (db != _consoleDb) {
@@ -318,13 +337,21 @@ class RedisDriver implements KeyValueDriver {
 
     switch (type) {
       case 'string':
+        final length = await size('STRLEN');
+        final partial = length > stringPreviewBytes;
         return KeyData(
           key: key,
           type: type,
           ttl: ttl,
           memoryBytes: memory,
-          length: await size('STRLEN'),
-          text: await run(db, ['GET', key]) as String?,
+          length: length,
+          text: await run(
+            db,
+            partial
+                ? ['GETRANGE', key, '0', '${stringPreviewBytes - 1}']
+                : ['GET', key],
+          ) as String?,
+          textTruncated: partial,
         );
       case 'hash':
         return KeyData(
@@ -394,6 +421,25 @@ class RedisDriver implements KeyValueDriver {
           ],
         );
       case 'ReJSON-RL':
+        var bytes = memory;
+        if (bytes == null) {
+          try {
+            bytes = await run(db, ['JSON.DEBUG', 'MEMORY', key]) as int?;
+          } on DriverException {
+            // Unknown size: fetch it anyway.
+          }
+        }
+        if (bytes != null && bytes > jsonMaxMemoryBytes) {
+          // Too large to fetch whole; the console can read parts by path.
+          return KeyData(
+            key: key,
+            type: type,
+            ttl: ttl,
+            memoryBytes: bytes,
+            length: 0,
+            textTruncated: true,
+          );
+        }
         final text = await run(db, ['JSON.GET', key]) as String?;
         return KeyData(
           key: key,

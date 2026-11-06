@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -45,22 +46,22 @@ Future<void> showExportDialog(
   );
 }
 
-/// Saves [text] to a file the user picks (desktop) or hands it to the share
-/// sheet (mobile). Returns a message to show, or null if the user cancelled.
+/// Saves the output of [bytes] to a file the user picks (desktop) or hands it
+/// to the share sheet (mobile). On desktop [bytes] runs only once a location
+/// is picked. Returns a message to show, or null if the user cancelled.
 Future<String?> saveExport(
   BuildContext context, {
-  required String text,
+  required Future<Uint8List> Function() bytes,
   required ExportFormat format,
   required String fileName,
 }) async {
   final name = '$fileName.${format.extension}';
   if (Platform.isAndroid || Platform.isIOS) {
     final box = context.findRenderObject() as RenderBox?;
+    final data = await bytes();
     final result = await SharePlus.instance.share(
       ShareParams(
-        files: [
-          share.XFile.fromData(utf8.encode(text), mimeType: format.mimeType),
-        ],
+        files: [share.XFile.fromData(data, mimeType: format.mimeType)],
         fileNameOverrides: [name],
         // Required on iPad to anchor the share popover.
         sharePositionOrigin: box == null
@@ -82,7 +83,7 @@ Future<String?> saveExport(
   if (!path.toLowerCase().endsWith('.${format.extension}')) {
     path = '$path.${format.extension}';
   }
-  await File(path).writeAsString(text);
+  await File(path).writeAsBytes(await bytes());
   return 'Saved to $path';
 }
 
@@ -108,58 +109,117 @@ class _ExportDialogState extends State<_ExportDialog> {
   /// SelectableText can't lay out quickly.
   static const _previewLines = 200;
 
+  /// Only this many rows are exported for the preview; copy and save
+  /// export everything on a background isolate.
+  static const _previewRows = 200;
+
+  /// Longer preview lines (huge values) are cut.
+  static const _previewLineChars = 1000;
+
   late final _tableName = TextEditingController(text: widget.tableName);
   ExportFormat _selectedFormat = ExportFormat.csv;
   bool _copied = false;
+  bool _copying = false;
   bool _saving = false;
 
-  // Exporting thousands of rows is not free; cache per format and target.
-  (ExportFormat, String)? _cacheKey;
-  String _cachedText = '';
-  String _cachedPreview = '';
+  /// The target table the preview uses; follows the field after a pause in
+  /// typing, so each keystroke doesn't re-export.
+  late String _previewTable = _tableName.text;
+  Timer? _previewTableTimer;
+
+  (ExportFormat, String)? _previewKey;
+  String _preview = '';
   bool _previewTruncated = false;
 
-  String get _exportedText {
-    final key = (_selectedFormat, _tableName.text.trim());
-    if (key != _cacheKey) {
-      _cacheKey = key;
-      _cachedText = ResultExporter.export(
-        widget.result,
-        _selectedFormat,
-        tableName: key.$2.isEmpty ? widget.tableName : key.$2,
-        dialect: widget.dialect,
-      );
-      final lines = const LineSplitter().convert(_cachedText);
-      _previewTruncated = lines.length > _previewLines;
-      _cachedPreview = _previewTruncated
-          ? lines.take(_previewLines).join('\n')
-          : _cachedText;
-    }
-    return _cachedText;
+  String _target(String text) =>
+      text.trim().isEmpty ? widget.tableName : text.trim();
+
+  void _updatePreview() {
+    final key = (_selectedFormat, _target(_previewTable));
+    if (key == _previewKey) return;
+    _previewKey = key;
+    final result = widget.result;
+    final moreRows = result.rows.length > _previewRows;
+    final text = ResultExporter.export(
+      moreRows
+          ? QueryResult(
+              columns: result.columns,
+              rows: result.rows.take(_previewRows).toList(),
+              affectedRows: result.affectedRows,
+              elapsed: result.elapsed,
+              truncated: result.truncated,
+            )
+          : result,
+      key.$1,
+      tableName: key.$2,
+      dialect: widget.dialect,
+    );
+    final lines = const LineSplitter().convert(text);
+    final longLines = lines.any((l) => l.length > _previewLineChars);
+    _previewTruncated = moreRows || lines.length > _previewLines;
+    _preview = _previewTruncated || longLines
+        ? [
+            for (final line in lines.take(_previewLines))
+              line.length > _previewLineChars
+                  ? '${line.substring(0, _previewLineChars)}…'
+                  : line,
+          ].join('\n')
+        : text;
   }
+
+  void _onTableNameChanged(String _) {
+    _previewTableTimer?.cancel();
+    _previewTableTimer = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) setState(() => _previewTable = _tableName.text);
+    });
+  }
+
+  Future<String> _exportAll() => ResultExporter.exportInBackground(
+    widget.result,
+    _selectedFormat,
+    tableName: _target(_tableName.text),
+    dialect: widget.dialect,
+  );
 
   @override
   void dispose() {
+    _previewTableTimer?.cancel();
     _tableName.dispose();
     super.dispose();
   }
 
-  void _copyToClipboard() {
-    Clipboard.setData(ClipboardData(text: _exportedText));
-    setState(() => _copied = true);
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _copied = false);
-    });
+  Future<void> _copyToClipboard() async {
+    setState(() => _copying = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await Clipboard.setData(ClipboardData(text: await _exportAll()));
+      if (!mounted) return;
+      setState(() => _copied = true);
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) setState(() => _copied = false);
+      });
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Export failed: $e')));
+    } finally {
+      if (mounted) setState(() => _copying = false);
+    }
   }
 
   Future<void> _save(BuildContext buttonContext) async {
     setState(() => _saving = true);
     final messenger = ScaffoldMessenger.of(context);
+    final format = _selectedFormat;
+    final tableName = _target(_tableName.text);
     try {
       final message = await saveExport(
         buttonContext,
-        text: _exportedText,
-        format: _selectedFormat,
+        bytes: () => ResultExporter.exportBytesInBackground(
+          widget.result,
+          format,
+          tableName: tableName,
+          dialect: widget.dialect,
+        ),
+        format: format,
         fileName: widget.fileName,
       );
       if (message == null || !mounted) return;
@@ -177,7 +237,7 @@ class _ExportDialogState extends State<_ExportDialog> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final rowCount = widget.result.rows.length;
-    final text = _exportedText;
+    _updatePreview();
     final isMobile = Platform.isAndroid || Platform.isIOS;
 
     return AlertDialog(
@@ -304,7 +364,7 @@ class _ExportDialogState extends State<_ExportDialog> {
                   helperText: 'Inserted as written: quote names if needed',
                   isDense: true,
                 ),
-                onChanged: (_) => setState(() {}),
+                onChanged: _onTableNameChanged,
               ),
             ],
             const SizedBox(height: 14),
@@ -316,8 +376,8 @@ class _ExportDialogState extends State<_ExportDialog> {
                 const Spacer(),
                 Text(
                   _previewTruncated
-                      ? 'first $_previewLines lines · ${text.length} characters'
-                      : '${text.length} characters',
+                      ? 'first lines · all $rowCount rows are exported'
+                      : '${_preview.length} characters',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
                     fontSize: 10,
@@ -340,7 +400,7 @@ class _ExportDialogState extends State<_ExportDialog> {
                   child: SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: SelectableText(
-                      _previewTruncated ? '$_cachedPreview\n…' : _cachedPreview,
+                      _previewTruncated ? '$_preview\n…' : _preview,
                       style: monoStyle.copyWith(fontSize: 12),
                     ),
                   ),
@@ -356,11 +416,16 @@ class _ExportDialogState extends State<_ExportDialog> {
           child: const Text('Close'),
         ),
         OutlinedButton.icon(
-          onPressed: _copyToClipboard,
-          icon: Icon(
-            _copied ? Icons.check_rounded : Icons.copy_rounded,
-            size: 16,
-          ),
+          onPressed: _copying ? null : _copyToClipboard,
+          icon: _copying
+              ? const SizedBox.square(
+                  dimension: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Icon(
+                  _copied ? Icons.check_rounded : Icons.copy_rounded,
+                  size: 16,
+                ),
           label: Text(_copied ? 'Copied!' : 'Copy'),
         ),
         Builder(

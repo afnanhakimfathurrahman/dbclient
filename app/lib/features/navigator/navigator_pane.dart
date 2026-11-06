@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -28,8 +30,20 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
   final _filterController = TextEditingController();
   String _filter = '';
 
+  /// Applies the filter once typing pauses: each change rebuilds the tree
+  /// and may load the objects of every schema.
+  Timer? _filterDebounce;
+
+  void _setFilter(String value) {
+    _filterDebounce?.cancel();
+    _filterDebounce = Timer(const Duration(milliseconds: 200), () {
+      if (mounted) setState(() => _filter = value.trim().toLowerCase());
+    });
+  }
+
   @override
   void dispose() {
+    _filterDebounce?.cancel();
     _filterController.dispose();
     super.dispose();
   }
@@ -154,13 +168,13 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
                     : IconButton(
                         icon: const Icon(Icons.clear, size: 14),
                         onPressed: () => setState(() {
+                          _filterDebounce?.cancel();
                           _filterController.clear();
                           _filter = '';
                         }),
                       ),
               ),
-              onChanged: (v) =>
-                  setState(() => _filter = v.trim().toLowerCase()),
+              onChanged: _setFilter,
             ),
           ),
           Expanded(

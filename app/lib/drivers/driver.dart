@@ -5,6 +5,8 @@
 /// stores [KeyValueDriver]. The UI picks views by [DatabaseEngine.family].
 library;
 
+import 'dart:typed_data';
+
 import 'sql_dialect.dart';
 
 /// How an engine models data; decides which views and drivers apply.
@@ -340,6 +342,53 @@ class QueryResult {
   bool get hasResultSet => columns.isNotEmpty;
 }
 
+/// Memory budget for the rows of one [SqlDriver.execute] result, as
+/// estimated by [estimateValueSize]. The row cap alone doesn't bound memory:
+/// 10,000 rows of multi-megabyte text, bytea or JSON would take gigabytes.
+/// Values are never cut short (editing, export and the value viewer need
+/// them whole); instead fetching stops once the kept rows exceed this.
+const maxResultBytes = 64 * 1024 * 1024;
+
+/// Rough in-memory size of a decoded value in bytes: text and binary by
+/// length, collections recursively, anything else a small fixed cost. Cheap
+/// enough to run on every fetched row.
+int estimateValueSize(Object? value) => switch (value) {
+  null => 8,
+  // Dart strings take one or two bytes per code unit; count two.
+  String() => 16 + value.length * 2,
+  TypedData() => 16 + value.lengthInBytes,
+  Map() => value.entries.fold(
+    32,
+    (sum, e) =>
+        sum + 16 + estimateValueSize(e.key) + estimateValueSize(e.value),
+  ),
+  Iterable() => value.fold(16, (sum, v) => sum + 8 + estimateValueSize(v)),
+  _ => 16,
+};
+
+/// Decides which fetched rows a result keeps: at most [maxRows] rows and,
+/// once their estimated size reaches [maxBytes], no more. A row that is
+/// offered while the budget is [full] means the result is truncated.
+class RowBudget {
+  RowBudget({required this.maxRows, this.maxBytes = maxResultBytes});
+
+  final int maxRows;
+  final int maxBytes;
+  int _rows = 0;
+  int _bytes = 0;
+
+  /// Estimated size of the rows kept so far.
+  int get bytes => _bytes;
+
+  bool get full => _rows >= maxRows || _bytes >= maxBytes;
+
+  /// Counts [row] as kept.
+  void add(List<Object?> row) {
+    _rows++;
+    _bytes += estimateValueSize(row);
+  }
+}
+
 class DriverException implements Exception {
   const DriverException(
     this.message, {
@@ -425,9 +474,11 @@ abstract class SqlDriver extends DatabaseDriver {
   /// including its comments, indexes and triggers.
   Future<String> ddl(String schema, String object);
 
-  /// Runs a single statement. At most [maxRows] rows are kept; when the limit
-  /// is hit the statement is cancelled on the server and the result is
-  /// marked [QueryResult.truncated].
+  /// Runs a single statement. At most [maxRows] rows are kept, and no more
+  /// than about [maxResultBytes] of values (see [RowBudget]); when either
+  /// limit is hit the statement is cancelled on the server and the result
+  /// is marked [QueryResult.truncated]. The cancel has finished by the time
+  /// the returned future completes, so it can't hit the next statement.
   Future<QueryResult> execute(String sql, {int maxRows = 10000});
 
   /// Runs [statements] in one transaction: either all of them take effect

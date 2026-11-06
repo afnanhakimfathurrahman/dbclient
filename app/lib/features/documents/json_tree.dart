@@ -17,22 +17,47 @@ class JsonTree extends StatefulWidget {
 }
 
 class _JsonTreeState extends State<JsonTree> {
+  /// Children of an expanded object/array shown at first, and per "more".
+  static const _chunk = 100;
+
   /// Paths of expanded objects/arrays, e.g. `address` or `items.0`.
   final _expanded = <String>{};
 
-  void _toggle(String path) => setState(
-    () =>
-        _expanded.contains(path) ? _expanded.remove(path) : _expanded.add(path),
-  );
+  /// Children shown per expanded path, when more than [_chunk].
+  final _shown = <String, int>{};
+
+  /// The rows, rebuilt only when the document or expansion changes.
+  List<Widget>? _rows;
+
+  void _toggle(String path) => setState(() {
+    _expanded.contains(path) ? _expanded.remove(path) : _expanded.add(path);
+    _rows = null;
+  });
+
+  void _showMore(String path) => setState(() {
+    _shown[path] = (_shown[path] ?? _chunk) + _chunk;
+    _rows = null;
+  });
 
   @override
-  Widget build(BuildContext context) {
+  void didUpdateWidget(JsonTree oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.document, widget.document)) _rows = null;
+  }
+
+  List<Widget> _buildRows() {
     final rows = <Widget>[];
     void add(String key, Object? value, String path, int depth) {
-      final children = switch (value) {
-        Map() => value.entries.map((e) => (e.key.toString(), e.value)),
-        List() => value.indexed.map((e) => (e.$1.toString(), e.$2)),
-        _ => null,
+      final (children, count) = switch (value) {
+        Map() => (
+          value.entries.map((e) => (e.key.toString(), e.value)),
+          value.length,
+        ),
+        List() => (
+          value.indexed.map((e) => (e.$1.toString(), e.$2)),
+          value.length,
+        ),
+        _ => (null, 0),
       };
       final open = _expanded.contains(path);
       rows.add(
@@ -45,8 +70,28 @@ class _JsonTreeState extends State<JsonTree> {
         ),
       );
       if (children != null && open) {
-        for (final (childKey, childValue) in children) {
+        final shown = _shown[path] ?? _chunk;
+        for (final (childKey, childValue) in children.take(shown)) {
           add(childKey, childValue, '$path.$childKey', depth + 1);
+        }
+        if (count > shown) {
+          final remaining = count - shown;
+          rows.add(
+            Padding(
+              padding: EdgeInsets.only(left: (depth + 1) * 16.0),
+              child: TextButton(
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+                onPressed: () => _showMore(path),
+                child: Text(
+                  'Show ${remaining < _chunk ? remaining : _chunk} more '
+                  '($remaining remaining)',
+                ),
+              ),
+            ),
+          );
         }
       }
     }
@@ -54,10 +99,15 @@ class _JsonTreeState extends State<JsonTree> {
     for (final MapEntry(:key, :value) in widget.document.entries) {
       add(key, value, key, 0);
     }
+    return rows;
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return SelectionArea(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: rows,
+        children: _rows ??= _buildRows(),
       ),
     );
   }

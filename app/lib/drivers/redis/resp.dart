@@ -4,6 +4,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 /// An error reply (`-ERR …`). Returned by the parser, thrown by clients.
@@ -30,88 +31,169 @@ Uint8List encodeCommand(List<String> args) {
   return out.toBytes();
 }
 
+/// Marks array elements a capped [RespParser] dropped; it is the last
+/// element of the array it stands in.
+class RespOmitted {
+  const RespOmitted(this.count);
+
+  final int count;
+
+  @override
+  bool operator ==(Object other) =>
+      other is RespOmitted && other.count == count;
+
+  @override
+  int get hashCode => count.hashCode;
+
+  @override
+  String toString() => '… $count more';
+}
+
 /// Parses replies from a byte stream fed in arbitrary chunks.
 ///
 /// Replies decode to: `String` (simple and bulk strings, UTF-8 with
 /// malformed bytes replaced), `int`, `null` (nil), `List<Object?>`, or
 /// [RespError].
+///
+/// With [maxArrayItems], an array keeps only its first elements, followed by
+/// a [RespOmitted] with the number dropped; the dropped bytes are still
+/// consumed, so the stream stays in sync.
 class RespParser {
-  final _buffer = BytesBuilder();
+  RespParser({this.maxArrayItems});
+
+  final int? maxArrayItems;
+
+  /// Unconsumed bytes are `_data[_pos, _end)`; the buffer grows by doubling
+  /// so a large reply arriving in many chunks is copied a bounded number of
+  /// times.
   Uint8List _data = Uint8List(0);
   int _pos = 0;
+  int _end = 0;
+
+  /// How far the reply at [_pos] is known to be complete, and the elements
+  /// still expected per nesting level, so a large reply is checked once
+  /// rather than reparsed per chunk.
+  int _scan = 0;
+  final _expected = <int>[];
 
   /// Adds bytes and returns every reply now complete, in order.
   List<Object?> add(List<int> chunk) {
-    if (_pos > 0) {
-      // Drop consumed bytes before appending.
-      _buffer.add(Uint8List.sublistView(_data, _pos));
-      _pos = 0;
-    } else if (_data.isNotEmpty) {
-      _buffer.add(_data);
-    }
-    _buffer.add(chunk);
-    _data = _buffer.takeBytes();
-
+    _append(chunk);
     final replies = <Object?>[];
-    while (true) {
-      final start = _pos;
-      final (complete, value) = _read();
-      if (!complete) {
-        _pos = start;
-        break;
+    while (_pos < _end) {
+      if (_expected.isEmpty) {
+        _scan = _pos;
+        _expected.add(1);
       }
-      replies.add(value);
+      if (!_complete()) break;
+      replies.add(_read(keep: true));
+    }
+    if (_pos == _end) {
+      _pos = _end = _scan = 0;
+      // Don't hold on to a buffer grown for one large reply.
+      if (_data.length > 1 << 20) _data = Uint8List(0);
     }
     return replies;
   }
 
-  /// Reads one reply at [_pos]; `(false, null)` if more bytes are needed.
-  (bool, Object?) _read() {
-    final line = _line();
-    if (line == null) return (false, null);
+  void _append(List<int> chunk) {
+    if (_end + chunk.length > _data.length) {
+      final live = _end - _pos;
+      final needed = live + chunk.length;
+      final data = needed <= _data.length ~/ 2
+          ? _data
+          : Uint8List(max(4096, max(needed, _data.length * 2)));
+      data.setRange(0, live, _data, _pos);
+      _data = data;
+      _scan -= _pos;
+      _pos = 0;
+      _end = live;
+    }
+    _data.setRange(_end, _end + chunk.length, chunk);
+    _end += chunk.length;
+  }
+
+  /// Advances [_scan] over whole elements of the reply at [_pos]; true once
+  /// all of it is buffered.
+  bool _complete() {
+    while (_expected.isNotEmpty) {
+      if (_expected.last == 0) {
+        _expected.removeLast();
+        continue;
+      }
+      final lineEnd = _lineEnd(_scan);
+      if (lineEnd < 0) return false;
+      final type = _data[_scan];
+      var next = lineEnd + 2;
+      int count() =>
+          int.parse(latin1.decode(_data.sublist(_scan + 1, lineEnd)));
+      if (type == 0x24) {
+        // $: a bulk string, complete only with its payload.
+        final length = count();
+        if (length >= 0) {
+          next += length + 2;
+          if (next > _end) return false;
+        }
+      }
+      _expected.last--;
+      if (type == 0x2A) {
+        // *: an array; its elements come next.
+        final items = count();
+        if (items > 0) _expected.add(items);
+      }
+      _scan = next;
+    }
+    return true;
+  }
+
+  /// Index of the CRLF ending the line at [from], or -1 if not buffered.
+  int _lineEnd(int from) {
+    for (var i = from; i < _end - 1; i++) {
+      if (_data[i] == 13 && _data[i + 1] == 10) return i;
+    }
+    return -1;
+  }
+
+  /// Reads one buffered reply at [_pos] ([_complete] has checked it is all
+  /// there); with [keep] false it is skipped without decoding.
+  Object? _read({required bool keep}) {
+    final lineEnd = _lineEnd(_pos);
+    final line = latin1.decode(Uint8List.sublistView(_data, _pos, lineEnd));
+    _pos = lineEnd + 2;
     final payload = line.substring(1);
     switch (line[0]) {
       case '+':
-        return (true, payload);
+        return payload;
       case '-':
-        return (true, RespError(payload));
+        return RespError(payload);
       case ':':
-        return (true, int.parse(payload));
+        return int.parse(payload);
       case r'$':
         final length = int.parse(payload);
-        if (length < 0) return (true, null);
-        if (_data.length < _pos + length + 2) return (false, null);
-        final text = utf8.decode(
-          Uint8List.sublistView(_data, _pos, _pos + length),
-          allowMalformed: true,
-        );
+        if (length < 0) return null;
+        final text = keep
+            ? utf8.decode(
+                Uint8List.sublistView(_data, _pos, _pos + length),
+                allowMalformed: true,
+              )
+            : null;
         _pos += length + 2;
-        return (true, text);
+        return text;
       case '*':
         final count = int.parse(payload);
-        if (count < 0) return (true, null);
-        final items = <Object?>[];
-        for (var i = 0; i < count; i++) {
-          final (complete, value) = _read();
-          if (!complete) return (false, null);
-          items.add(value);
+        if (count < 0) return null;
+        final kept = keep ? min(count, maxArrayItems ?? count) : 0;
+        final items = <Object?>[
+          for (var i = 0; i < kept; i++) _read(keep: true),
+        ];
+        for (var i = kept; i < count; i++) {
+          _read(keep: false);
         }
-        return (true, items);
+        if (keep && kept < count) items.add(RespOmitted(count - kept));
+        return keep ? items : null;
       default:
         throw FormatException('Unexpected RESP type "${line[0]}"');
     }
-  }
-
-  /// The next CRLF-terminated line (without CRLF), or null if incomplete.
-  String? _line() {
-    for (var i = _pos; i < _data.length - 1; i++) {
-      if (_data[i] == 13 && _data[i + 1] == 10) {
-        final line = latin1.decode(Uint8List.sublistView(_data, _pos, i));
-        _pos = i + 2;
-        return line;
-      }
-    }
-    return null;
   }
 }
 
@@ -194,27 +276,54 @@ List<String> splitRedisCommand(String line) {
   return args;
 }
 
-/// Formats a reply the way redis-cli prints it.
-String formatRedisReply(Object? reply, {String indent = ''}) {
-  return switch (reply) {
-    null => '(nil)',
-    int() => '(integer) $reply',
-    RespError() => '(error) ${reply.message}',
-    String() => jsonEncode(reply),
-    List() when reply.isEmpty => '(empty array)',
-    List() => () {
-      final width = '${reply.length}'.length;
-      final out = StringBuffer();
-      for (final (i, item) in reply.indexed) {
-        final number = '${i + 1}'.padLeft(width);
-        final prefix = '$number) ';
-        if (i > 0) out.write('\n$indent');
-        out
-          ..write(prefix)
-          ..write(formatRedisReply(item, indent: indent + ' ' * prefix.length));
+/// Formats a reply the way redis-cli prints it. With [maxChars], output
+/// stops at about that many characters, ending in a note.
+String formatRedisReply(Object? reply, {String indent = '', int? maxChars}) {
+  final out = StringBuffer();
+  if (!_writeReply(out, reply, indent, maxChars ?? -1)) {
+    out.write('\n… output cut at $maxChars characters');
+  }
+  return out.toString();
+}
+
+/// Writes [reply] to [out]; false once [limit] (negative: none) is reached.
+bool _writeReply(StringBuffer out, Object? reply, String indent, int limit) {
+  bool fits() => limit < 0 || out.length < limit;
+  switch (reply) {
+    case null:
+      out.write('(nil)');
+    case int():
+      out.write('(integer) $reply');
+    case RespError():
+      out.write('(error) ${reply.message}');
+    case String():
+      final room = limit < 0 ? reply.length : max(0, limit - out.length);
+      if (reply.length > room) {
+        out.write(jsonEncode(reply.substring(0, room)));
+        return false;
       }
-      return out.toString();
-    }(),
-    _ => '$reply',
-  };
+      out.write(jsonEncode(reply));
+    case RespOmitted():
+      out.write('… ${reply.count} more');
+    case List() when reply.isEmpty:
+      out.write('(empty array)');
+    case List():
+      final width = '${reply.length}'.length;
+      for (final (i, item) in reply.indexed) {
+        if (i > 0) out.write('\n$indent');
+        if (item is RespOmitted) {
+          out.write('${' ' * width}  … ${item.count} more');
+          break;
+        }
+        final prefix = '${'${i + 1}'.padLeft(width)}) ';
+        out.write(prefix);
+        if (!_writeReply(out, item, indent + ' ' * prefix.length, limit) ||
+            !fits()) {
+          return false;
+        }
+      }
+    default:
+      out.write('$reply');
+  }
+  return fits();
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'driver.dart';
@@ -54,6 +55,40 @@ class ResultExporter {
       ExportFormat.tsv => toTsv(result),
       ExportFormat.sql => toSql(result, tableName: tableName, dialect: dialect),
     };
+  }
+
+  /// [export] on a background isolate, so thousands of rows don't stall the
+  /// UI. Falls back to this isolate if a value can't be sent.
+  static Future<String> exportInBackground(
+    QueryResult result,
+    ExportFormat format, {
+    String tableName = 'records',
+    SqlDialect dialect = postgresDialect,
+  }) => _inBackground(
+    () => export(result, format, tableName: tableName, dialect: dialect),
+  );
+
+  /// Like [exportInBackground], as UTF-8 bytes for writing to a file; the
+  /// encoding happens in the isolate too.
+  static Future<Uint8List> exportBytesInBackground(
+    QueryResult result,
+    ExportFormat format, {
+    String tableName = 'records',
+    SqlDialect dialect = postgresDialect,
+  }) => _inBackground(
+    () => utf8.encode(
+      export(result, format, tableName: tableName, dialect: dialect),
+    ),
+  );
+
+  static Future<T> _inBackground<T>(T Function() work) async {
+    try {
+      return await Isolate.run(work);
+    } on ArgumentError {
+      // An unsendable value (the message is checked before the isolate
+      // starts); do the work here instead.
+      return work();
+    }
   }
 
   static String toCsv(QueryResult result) {
