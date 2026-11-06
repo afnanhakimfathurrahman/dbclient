@@ -8,9 +8,7 @@ coverage/
 .env*
 !.env.example
 
-# Release builds kept in the project root for uploading; published as
-# GitHub releases on db-client-releases, never committed.
-/db-client-*.zip
-/db-client-*.tar.gz
-/db-client-*-setup.exe
+# Release builds (scripts/build-release.ps1); published as GitHub releases
+# on db-client-releases, never committed.
+/binary/
 /db-client-windows-x64/

@@ -1,0 +1,24 @@
+# Linux build environment for DB Client: Ubuntu 22.04 (so the app also runs
+# on older distributions) with the GTK toolchain and Flutter preinstalled.
+# Built and reused by scripts/build-release.ps1.
+FROM docker.io/library/ubuntu:22.04
+
+ARG FLUTTER_VERSION
+ENV DEBIAN_FRONTEND=noninteractive \
+    # Rootless Podman can't map archived owner IDs; keep files as root.
+    TAR_OPTIONS=--no-same-owner \
+    PATH=/opt/flutter/bin:$PATH
+
+RUN apt-get update -qq \
+ && apt-get install -y -qq curl git unzip xz-utils zip ca-certificates \
+      clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+      libstdc++-12-dev libsecret-1-dev >/dev/null \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN git clone -q --depth 1 --branch "$FLUTTER_VERSION" \
+      https://github.com/flutter/flutter.git /opt/flutter \
+ && git config --global --add safe.directory /opt/flutter \
+ && flutter config --no-analytics --enable-linux-desktop >/dev/null \
+ && flutter precache --linux
+
+COPY build.sh /usr/local/bin/build-db-client
