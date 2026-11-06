@@ -48,7 +48,7 @@ All drivers are built in. You can paste a connection URL (for example
 ## Install
 
 Download the file for your system from the
-[latest release](https://github.com/kamaludin68/db-client/releases/latest).
+[latest release](https://github.com/kamaludin68/db-client-releases/releases/latest).
 The app is portable: unpack it and run it.
 
 ### Windows 10 / 11 (64-bit)
@@ -79,7 +79,7 @@ The app is portable: unpack it and run it.
 sudo apt install libgtk-3-0 libsecret-1-0 libegl1 libgles2   # Debian / Ubuntu
 sudo dnf install gtk3 libsecret libglvnd-egl libglvnd-gles  # Fedora
 
-curl -LO https://github.com/kamaludin68/db-client/releases/latest/download/db-client-linux-x64.tar.gz
+curl -LO https://github.com/kamaludin68/db-client-releases/releases/latest/download/db-client-linux-x64.tar.gz
 tar -xzf db-client-linux-x64.tar.gz -C ~/.local/share
 ~/.local/share/db-client/db_client
 ```
@@ -103,13 +103,16 @@ See [`app/README.md`](app/README.md) for tests and platform notes, and
 
 ## Releases
 
-Pushing a version tag builds Windows, macOS and Linux on GitHub Actions and
-publishes them as a GitHub release:
+This repository is private. Builds and the website are published from the
+public [db-client-releases](https://github.com/kamaludin68/db-client-releases)
+repo. Pushing a version tag here builds Windows, macOS and Linux on GitHub
+Actions and publishes them as a release there (needs the `RELEASES_TOKEN`
+secret, see `.github/workflows/release.yml`):
 
 ```sh
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The website in `site/` is published to GitHub Pages when it changes on
-`main`.
+The website is `index.html` in db-client-releases, served by GitHub Pages
+from its `main` branch.
