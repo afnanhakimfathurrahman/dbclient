@@ -338,10 +338,10 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 24px; justify-content: 
         <ol>
           <li>Install the libraries the app uses (most desktops already have them):
             <pre><code># Debian / Ubuntu
-sudo apt install libgtk-3-0 libsecret-1-0
+sudo apt install libgtk-3-0 libsecret-1-0 libegl1 libgles2
 
 # Fedora
-sudo dnf install gtk3 libsecret</code></pre></li>
+sudo dnf install gtk3 libsecret libglvnd-egl libglvnd-gles</code></pre></li>
           <li>Download and unpack the app:
             <pre><code>curl -LO https://github.com/kamaludin68/db-client/releases/latest/download/db-client-linux-x64.tar.gz
 tar -xzf db-client-linux-x64.tar.gz -C ~/.local/share</code></pre></li>

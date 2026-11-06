@@ -76,8 +76,8 @@ The app is portable: unpack it and run it.
 
 ```sh
 # Libraries the app uses (most desktops already have them)
-sudo apt install libgtk-3-0 libsecret-1-0      # Debian / Ubuntu
-sudo dnf install gtk3 libsecret                # Fedora
+sudo apt install libgtk-3-0 libsecret-1-0 libegl1 libgles2   # Debian / Ubuntu
+sudo dnf install gtk3 libsecret libglvnd-egl libglvnd-gles  # Fedora
 
 curl -LO https://github.com/kamaludin68/db-client/releases/latest/download/db-client-linux-x64.tar.gz
 tar -xzf db-client-linux-x64.tar.gz -C ~/.local/share
