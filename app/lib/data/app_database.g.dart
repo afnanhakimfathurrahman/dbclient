@@ -111,6 +111,17 @@ class $ConnectionsTable extends Connections
     ),
     defaultValue: const Constant(true),
   );
+  static const VerificationMeta _optionsMeta = const VerificationMeta(
+    'options',
+  );
+  @override
+  late final GeneratedColumn<String> options = GeneratedColumn<String>(
+    'options',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _createdAtMeta = const VerificationMeta(
     'createdAt',
   );
@@ -135,6 +146,7 @@ class $ConnectionsTable extends Connections
     tlsMode,
     color,
     savePassword,
+    options,
     createdAt,
   ];
   @override
@@ -227,6 +239,12 @@ class $ConnectionsTable extends Connections
         ),
       );
     }
+    if (data.containsKey('options')) {
+      context.handle(
+        _optionsMeta,
+        options.isAcceptableOrUnknown(data['options']!, _optionsMeta),
+      );
+    }
     if (data.containsKey('created_at')) {
       context.handle(
         _createdAtMeta,
@@ -282,6 +300,10 @@ class $ConnectionsTable extends Connections
         DriftSqlType.bool,
         data['${effectivePrefix}save_password'],
       )!,
+      options: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}options'],
+      ),
       createdAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}created_at'],
@@ -306,6 +328,9 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
   final String tlsMode;
   final int color;
   final bool savePassword;
+
+  /// JSON object of engine-specific settings (no secrets); null if none.
+  final String? options;
   final DateTime createdAt;
   const ConnectionRow({
     required this.id,
@@ -318,6 +343,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
     required this.tlsMode,
     required this.color,
     required this.savePassword,
+    this.options,
     required this.createdAt,
   });
   @override
@@ -333,6 +359,9 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
     map['tls_mode'] = Variable<String>(tlsMode);
     map['color'] = Variable<int>(color);
     map['save_password'] = Variable<bool>(savePassword);
+    if (!nullToAbsent || options != null) {
+      map['options'] = Variable<String>(options);
+    }
     map['created_at'] = Variable<DateTime>(createdAt);
     return map;
   }
@@ -349,6 +378,9 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
       tlsMode: Value(tlsMode),
       color: Value(color),
       savePassword: Value(savePassword),
+      options: options == null && nullToAbsent
+          ? const Value.absent()
+          : Value(options),
       createdAt: Value(createdAt),
     );
   }
@@ -369,6 +401,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
       tlsMode: serializer.fromJson<String>(json['tlsMode']),
       color: serializer.fromJson<int>(json['color']),
       savePassword: serializer.fromJson<bool>(json['savePassword']),
+      options: serializer.fromJson<String?>(json['options']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
     );
   }
@@ -386,6 +419,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
       'tlsMode': serializer.toJson<String>(tlsMode),
       'color': serializer.toJson<int>(color),
       'savePassword': serializer.toJson<bool>(savePassword),
+      'options': serializer.toJson<String?>(options),
       'createdAt': serializer.toJson<DateTime>(createdAt),
     };
   }
@@ -401,6 +435,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
     String? tlsMode,
     int? color,
     bool? savePassword,
+    Value<String?> options = const Value.absent(),
     DateTime? createdAt,
   }) => ConnectionRow(
     id: id ?? this.id,
@@ -413,6 +448,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
     tlsMode: tlsMode ?? this.tlsMode,
     color: color ?? this.color,
     savePassword: savePassword ?? this.savePassword,
+    options: options.present ? options.value : this.options,
     createdAt: createdAt ?? this.createdAt,
   );
   ConnectionRow copyWithCompanion(ConnectionsCompanion data) {
@@ -429,6 +465,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
       savePassword: data.savePassword.present
           ? data.savePassword.value
           : this.savePassword,
+      options: data.options.present ? data.options.value : this.options,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
     );
   }
@@ -446,6 +483,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
           ..write('tlsMode: $tlsMode, ')
           ..write('color: $color, ')
           ..write('savePassword: $savePassword, ')
+          ..write('options: $options, ')
           ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
@@ -463,6 +501,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
     tlsMode,
     color,
     savePassword,
+    options,
     createdAt,
   );
   @override
@@ -479,6 +518,7 @@ class ConnectionRow extends DataClass implements Insertable<ConnectionRow> {
           other.tlsMode == this.tlsMode &&
           other.color == this.color &&
           other.savePassword == this.savePassword &&
+          other.options == this.options &&
           other.createdAt == this.createdAt);
 }
 
@@ -493,6 +533,7 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
   final Value<String> tlsMode;
   final Value<int> color;
   final Value<bool> savePassword;
+  final Value<String?> options;
   final Value<DateTime> createdAt;
   final Value<int> rowid;
   const ConnectionsCompanion({
@@ -506,6 +547,7 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
     this.tlsMode = const Value.absent(),
     this.color = const Value.absent(),
     this.savePassword = const Value.absent(),
+    this.options = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.rowid = const Value.absent(),
   });
@@ -520,6 +562,7 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
     required String tlsMode,
     required int color,
     this.savePassword = const Value.absent(),
+    this.options = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
@@ -542,6 +585,7 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
     Expression<String>? tlsMode,
     Expression<int>? color,
     Expression<bool>? savePassword,
+    Expression<String>? options,
     Expression<DateTime>? createdAt,
     Expression<int>? rowid,
   }) {
@@ -556,6 +600,7 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
       if (tlsMode != null) 'tls_mode': tlsMode,
       if (color != null) 'color': color,
       if (savePassword != null) 'save_password': savePassword,
+      if (options != null) 'options': options,
       if (createdAt != null) 'created_at': createdAt,
       if (rowid != null) 'rowid': rowid,
     });
@@ -572,6 +617,7 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
     Value<String>? tlsMode,
     Value<int>? color,
     Value<bool>? savePassword,
+    Value<String?>? options,
     Value<DateTime>? createdAt,
     Value<int>? rowid,
   }) {
@@ -586,6 +632,7 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
       tlsMode: tlsMode ?? this.tlsMode,
       color: color ?? this.color,
       savePassword: savePassword ?? this.savePassword,
+      options: options ?? this.options,
       createdAt: createdAt ?? this.createdAt,
       rowid: rowid ?? this.rowid,
     );
@@ -624,6 +671,9 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
     if (savePassword.present) {
       map['save_password'] = Variable<bool>(savePassword.value);
     }
+    if (options.present) {
+      map['options'] = Variable<String>(options.value);
+    }
     if (createdAt.present) {
       map['created_at'] = Variable<DateTime>(createdAt.value);
     }
@@ -646,6 +696,7 @@ class ConnectionsCompanion extends UpdateCompanion<ConnectionRow> {
           ..write('tlsMode: $tlsMode, ')
           ..write('color: $color, ')
           ..write('savePassword: $savePassword, ')
+          ..write('options: $options, ')
           ..write('createdAt: $createdAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -1154,6 +1205,7 @@ typedef $$ConnectionsTableCreateCompanionBuilder =
       required String tlsMode,
       required int color,
       Value<bool> savePassword,
+      Value<String?> options,
       Value<DateTime> createdAt,
       Value<int> rowid,
     });
@@ -1169,6 +1221,7 @@ typedef $$ConnectionsTableUpdateCompanionBuilder =
       Value<String> tlsMode,
       Value<int> color,
       Value<bool> savePassword,
+      Value<String?> options,
       Value<DateTime> createdAt,
       Value<int> rowid,
     });
@@ -1252,6 +1305,11 @@ class $$ConnectionsTableFilterComposer
 
   ColumnFilters<bool> get savePassword => $composableBuilder(
     column: $table.savePassword,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get options => $composableBuilder(
+    column: $table.options,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1345,6 +1403,11 @@ class $$ConnectionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get options => $composableBuilder(
+    column: $table.options,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get createdAt => $composableBuilder(
     column: $table.createdAt,
     builder: (column) => ColumnOrderings(column),
@@ -1391,6 +1454,9 @@ class $$ConnectionsTableAnnotationComposer
     column: $table.savePassword,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get options =>
+      $composableBuilder(column: $table.options, builder: (column) => column);
 
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
@@ -1459,6 +1525,7 @@ class $$ConnectionsTableTableManager
                 Value<String> tlsMode = const Value.absent(),
                 Value<int> color = const Value.absent(),
                 Value<bool> savePassword = const Value.absent(),
+                Value<String?> options = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConnectionsCompanion(
@@ -1472,6 +1539,7 @@ class $$ConnectionsTableTableManager
                 tlsMode: tlsMode,
                 color: color,
                 savePassword: savePassword,
+                options: options,
                 createdAt: createdAt,
                 rowid: rowid,
               ),
@@ -1487,6 +1555,7 @@ class $$ConnectionsTableTableManager
                 required String tlsMode,
                 required int color,
                 Value<bool> savePassword = const Value.absent(),
+                Value<String?> options = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ConnectionsCompanion.insert(
@@ -1500,6 +1569,7 @@ class $$ConnectionsTableTableManager
                 tlsMode: tlsMode,
                 color: color,
                 savePassword: savePassword,
+                options: options,
                 createdAt: createdAt,
                 rowid: rowid,
               ),

@@ -61,7 +61,7 @@ class InspectorView extends ConsumerWidget {
         .where((c) => c.id == tab.connectionId)
         .firstOrNull;
     if (config == null) return;
-    final driver = await connectWithPrompt(context, ref, config);
+    final driver = await connectSqlWithPrompt(context, ref, config);
     if (driver != null) {
       // One extra row tells whether the table has more than the limit.
       await tab.loadPreview(driver, _selectSql(tab.rowLimit + 1));
@@ -86,7 +86,7 @@ class InspectorView extends ConsumerWidget {
         .firstOrNull;
     final driver = config == null
         ? null
-        : await connectWithPrompt(context, ref, config);
+        : await connectSqlWithPrompt(context, ref, config);
     if (driver == null) throw const DriverException('Not connected');
     await driver.executeAll(statements);
   }
@@ -149,7 +149,11 @@ class InspectorView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final object = tab.object;
-    final sections = _sectionsFor(object.kind);
+    final features = _features(ref);
+    final sections = [
+      for (final s in _sectionsFor(object.kind))
+        if (s.feature == null || features.contains(s.feature)) s,
+    ];
 
     return DefaultTabController(
       length: sections.length,
@@ -256,15 +260,19 @@ class InspectorView extends ConsumerWidget {
   Widget _page(BuildContext context, WidgetRef ref, _Section section) {
     final key = _key;
     final object = tab.object;
+    // The schema dialogs generate PostgreSQL syntax.
+    final editable = _features(ref).contains(SqlFeature.schemaEditing);
     final canManageColumns =
-        object.kind.isTable || object.kind == DbObjectKind.foreignTable;
+        editable &&
+        (object.kind.isTable || object.kind == DbObjectKind.foreignTable);
     // Foreign tables can't have PK/UNIQUE/FK constraints.
-    final canManageConstraints = object.kind.isTable;
-    final canManageForeignKeys = object.kind.isTable;
+    final canManageConstraints = editable && object.kind.isTable;
+    final canManageForeignKeys = editable && object.kind.isTable;
     final canManageIndexes =
-        object.kind.isTable || object.kind == DbObjectKind.materializedView;
+        editable &&
+        (object.kind.isTable || object.kind == DbObjectKind.materializedView);
     final canManageTriggers =
-        object.kind.isTable || object.kind == DbObjectKind.view;
+        editable && (object.kind.isTable || object.kind == DbObjectKind.view);
 
     return switch (section) {
       _Section.data => _DataPage(
@@ -551,6 +559,9 @@ class InspectorView extends ConsumerWidget {
     };
   }
 
+  Set<SqlFeature> _features(WidgetRef ref) =>
+      ref.watch(sqlDriverProvider(tab.connectionId))?.features ?? const {};
+
   static List<_Section> _sectionsFor(DbObjectKind kind) => switch (kind) {
     DbObjectKind.table => const [
       _Section.data,
@@ -614,16 +625,19 @@ class InspectorView extends ConsumerWidget {
 enum _Section {
   data('Data'),
   columns('Columns'),
-  constraints('Constraints'),
-  foreignKeys('Foreign Keys'),
-  indexes('Indexes'),
-  triggers('Triggers'),
-  partitions('Partitions'),
+  constraints('Constraints', SqlFeature.constraints),
+  foreignKeys('Foreign Keys', SqlFeature.foreignKeys),
+  indexes('Indexes', SqlFeature.indexes),
+  triggers('Triggers', SqlFeature.triggers),
+  partitions('Partitions', SqlFeature.partitions),
   ddl('DDL');
 
-  const _Section(this.label);
+  const _Section(this.label, [this.feature]);
 
   final String label;
+
+  /// Shown only for engines with this feature; null means always.
+  final SqlFeature? feature;
 }
 
 class _DataPage extends StatefulWidget {

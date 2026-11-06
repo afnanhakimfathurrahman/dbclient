@@ -523,7 +523,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
       _snack('Nothing to run.');
       return;
     }
-    final driver = await connectWithPrompt(context, ref, config);
+    final driver = await connectSqlWithPrompt(context, ref, config);
     if (driver == null) return;
     await tab.run(statements, driver, ref.read(historyRepositoryProvider));
   }

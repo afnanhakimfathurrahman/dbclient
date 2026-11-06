@@ -195,7 +195,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
         expanded: expanded,
         leading: _StatusDot(color: Color(config.color), session: session),
         label: config.name,
-        subtitle: config.displayAddress,
+        subtitle: '${config.engine.label} · ${config.displayAddress}',
         onTap: () => _toggleConnection(config),
         trailing: PopupMenuButton<String>(
           tooltip: 'Actions',
@@ -268,12 +268,14 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
   /// Tables, Views, … folders of a schema, followed by Functions.
   List<Widget> _schemaFolders(ConnectionConfig config, String schema) {
     final objects = ref.watch(objectsProvider((config.id, schema)));
+    final features = _features(config);
     return objects.when(
       loading: () => [const _Loading(depth: 2)],
       error: (e, _) => [_ErrorRow(depth: 2, error: e)],
       data: (list) {
         final widgets = <Widget>[];
         for (final folder in _relationFolders) {
+          if (folder.feature case final f? when !features.contains(f)) continue;
           final all = [
             for (final o in list)
               if (folder.kinds.contains(o.kind)) o,
@@ -304,7 +306,9 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
             }
           }
         }
-        if (_filter.isEmpty) widgets.addAll(_routinesFolder(config, schema));
+        if (_filter.isEmpty && features.contains(SqlFeature.routines)) {
+          widgets.addAll(_routinesFolder(config, schema));
+        }
         return widgets;
       },
     );
@@ -322,7 +326,11 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
     String? detail,
   }) {
     final key = _objectKey(config, object);
-    final folders = _foldersFor(object.kind);
+    final features = _features(config);
+    final folders = [
+      for (final folder in _foldersFor(object.kind))
+        if (folder.feature == null || features.contains(folder.feature)) folder,
+    ];
     final open = folders.isNotEmpty && _expanded.contains(key);
     return [
       _TreeRow(
@@ -526,7 +534,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
     ConnectionConfig config,
     RoutineInfo routine,
   ) async {
-    final driver = ref.read(driverProvider(config.id));
+    final driver = ref.read(sqlDriverProvider(config.id));
     if (driver == null) return;
     try {
       final definition = await driver.routineDefinition(routine);
@@ -596,6 +604,10 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
     }
   }
 
+  /// What the connected engine supports; empty while not connected.
+  Set<SqlFeature> _features(ConnectionConfig config) =>
+      ref.watch(sqlDriverProvider(config.id))?.features ?? const {};
+
   List<_ObjectFolder> _foldersFor(DbObjectKind kind) => switch (kind) {
     DbObjectKind.table => const [
       _ObjectFolder.columns,
@@ -653,11 +665,19 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
 
 /// Schema-level folders grouping relations by kind, in DBeaver's order.
 class _RelationFolder {
-  const _RelationFolder(this.label, this.kinds, {this.hideWhenEmpty = false});
+  const _RelationFolder(
+    this.label,
+    this.kinds, {
+    this.hideWhenEmpty = false,
+    this.feature,
+  });
 
   final String label;
   final Set<DbObjectKind> kinds;
   final bool hideWhenEmpty;
+
+  /// Shown only for engines with this feature; null means always.
+  final SqlFeature? feature;
 }
 
 const _relationFolders = [
@@ -670,21 +690,28 @@ const _relationFolders = [
   }, hideWhenEmpty: true),
   _RelationFolder('Views', {DbObjectKind.view}),
   _RelationFolder('Materialized Views', {DbObjectKind.materializedView}),
-  _RelationFolder('Sequences', {DbObjectKind.sequence}),
+  _RelationFolder(
+    'Sequences',
+    {DbObjectKind.sequence},
+    feature: SqlFeature.sequences,
+  ),
 ];
 
 /// Folders under a table-like object.
 enum _ObjectFolder {
   columns('Columns'),
-  constraints('Constraints'),
-  foreignKeys('Foreign Keys'),
-  indexes('Indexes'),
-  triggers('Triggers'),
-  partitions('Partitions');
+  constraints('Constraints', SqlFeature.constraints),
+  foreignKeys('Foreign Keys', SqlFeature.foreignKeys),
+  indexes('Indexes', SqlFeature.indexes),
+  triggers('Triggers', SqlFeature.triggers),
+  partitions('Partitions', SqlFeature.partitions);
 
-  const _ObjectFolder(this.label);
+  const _ObjectFolder(this.label, [this.feature]);
 
   final String label;
+
+  /// Shown only for engines with this feature; null means always.
+  final SqlFeature? feature;
 }
 
 class _FolderRow extends StatelessWidget {
