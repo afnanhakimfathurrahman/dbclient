@@ -4,7 +4,13 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// Windows Credential Locker, libsecret).
 class SecretStore {
   SecretStore([FlutterSecureStorage? storage])
-    : _storage = storage ?? const FlutterSecureStorage();
+    : _storage =
+          storage ??
+          const FlutterSecureStorage(
+            // The data protection keychain needs a signed app with a team
+            // entitlement; downloaded builds are unsigned.
+            mOptions: MacOsOptions(usesDataProtectionKeychain: false),
+          );
 
   final FlutterSecureStorage _storage;
 
