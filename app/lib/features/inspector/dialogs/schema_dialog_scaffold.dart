@@ -21,7 +21,7 @@ class SchemaDialogScaffold extends StatelessWidget {
     this.busy = false,
     this.error,
     required this.onApply,
-    required this.onOpenInSql,
+    this.onOpenInSql,
     required this.body,
     this.maxWidth = 600,
   });
@@ -36,7 +36,9 @@ class SchemaDialogScaffold extends StatelessWidget {
   final bool busy;
   final String? error;
   final VoidCallback onApply;
-  final VoidCallback onOpenInSql;
+
+  /// Hides the "Open in SQL" button when null (MongoDB).
+  final VoidCallback? onOpenInSql;
   final Widget body;
   final double maxWidth;
 
@@ -45,6 +47,9 @@ class SchemaDialogScaffold extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final primaryColor = iconColor ?? scheme.primary;
+    // Phones: the footer's labelled buttons don't fit in one row, so
+    // "Open in SQL" shows as an icon and Cancel is left to the close button.
+    final narrow = MediaQuery.sizeOf(context).width < 520;
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -222,20 +227,31 @@ class SchemaDialogScaffold extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Row(
                 children: [
-                  OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    icon: const Icon(Icons.code_rounded, size: 15),
-                    label: const Text('Open in SQL'),
-                    onPressed: busy ? null : onOpenInSql,
-                  ),
+                  if (onOpenInSql != null)
+                    narrow
+                        ? IconButton(
+                            tooltip: 'Open in SQL',
+                            icon: const Icon(Icons.code_rounded, size: 18),
+                            onPressed: busy ? null : onOpenInSql,
+                          )
+                        : OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            icon: const Icon(Icons.code_rounded, size: 15),
+                            label: const Text('Open in SQL'),
+                            onPressed: busy ? null : onOpenInSql,
+                          ),
                   const Spacer(),
-                  TextButton(
-                    onPressed: busy ? null : () => Navigator.of(context).pop(),
-                    child: const Text('Cancel'),
-                  ),
-                  const SizedBox(width: 8),
+                  if (!narrow) ...[
+                    TextButton(
+                      onPressed: busy
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                      child: const Text('Cancel'),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
                   FilledButton(
                     style: isDestructive
                         ? FilledButton.styleFrom(
