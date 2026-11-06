@@ -1,10 +1,13 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show TextEditingController;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/repositories.dart';
+import '../drivers/document.dart';
 import '../drivers/driver.dart';
+import '../drivers/mongodb/mongo_json.dart';
 import '../drivers/sql_splitter.dart';
 import 'data_editor.dart';
 import 'providers.dart';
@@ -125,10 +128,7 @@ class InspectorTab extends WorkspaceTab {
   }
 
   /// Rows are edited by primary key, so only tables with one are editable.
-  Future<void> _prepareEditing(
-    SqlDriver driver,
-    QueryResult preview,
-  ) async {
+  Future<void> _prepareEditing(SqlDriver driver, QueryResult preview) async {
     _setEditor(null);
     if (!object.kind.isTable) {
       _readOnlyReason = '${object.kind.label}s are read-only here';
@@ -177,6 +177,116 @@ class InspectorTab extends WorkspaceTab {
       this.connectionId == connectionId &&
       object.schema == other.schema &&
       object.name == other.name;
+}
+
+enum DocumentQueryMode { find, aggregate }
+
+/// A MongoDB collection: query inputs (kept across tab switches) and the
+/// current page of documents.
+class CollectionTab extends WorkspaceTab {
+  CollectionTab({
+    required this.connectionId,
+    required this.database,
+    required this.info,
+    this.limit = InspectorTab.defaultRowLimit,
+  });
+
+  @override
+  final String connectionId;
+  final String database;
+  final CollectionInfo info;
+
+  String get collection => info.name;
+
+  @override
+  String get title => collection;
+
+  final filter = TextEditingController();
+  final projection = TextEditingController();
+  final sort = TextEditingController();
+  final pipeline = TextEditingController(
+    text: '[\n  { \$match: {} },\n  { \$group: { _id: null, count: { \$sum: 1 } } }\n]',
+  );
+
+  DocumentQueryMode mode = DocumentQueryMode.find;
+  int skip = 0;
+  int limit;
+
+  DocumentPage? _page;
+  DocumentPage? get page => _page;
+
+  /// Documents matching the filter; null for aggregations or until known.
+  int? _total;
+  int? get total => _total;
+
+  /// A parse error in the inputs or a server error.
+  Object? _error;
+  Object? get error => _error;
+
+  bool _loading = false;
+  @override
+  bool get busy => _loading;
+
+  bool get loaded => _page != null || _error != null;
+
+  /// Runs the current query. [resetSkip] starts again from the first page.
+  Future<void> run(DocumentDriver driver, {bool resetSkip = false}) async {
+    if (_loading) return;
+    if (resetSkip) skip = 0;
+    _loading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      if (mode == DocumentQueryMode.find) {
+        final filterDoc = parseMongoDocument(filter.text, what: 'filter');
+        final page = await driver.find(
+          database,
+          collection,
+          filter: filterDoc,
+          projection: parseMongoDocument(projection.text, what: 'projection'),
+          sort: parseMongoDocument(sort.text, what: 'sort'),
+          skip: skip,
+          limit: limit,
+        );
+        _page = page;
+        _total = await driver.count(database, collection, filterDoc);
+      } else {
+        final stages = parseMongo(pipeline.text);
+        if (stages is! List || stages.any((s) => s is! Map<String, dynamic>)) {
+          throw const FormatException(
+            'The pipeline must be an array of stages: [ { \$match: … } ]',
+          );
+        }
+        _page = await driver.aggregate(
+          database,
+          collection,
+          stages.cast<Map<String, dynamic>>(),
+          limit: limit,
+        );
+        _total = null;
+      }
+    } on FormatException catch (e) {
+      _error = e.message;
+    } on DriverException catch (e) {
+      _error = e;
+    } finally {
+      _loading = false;
+      notifyListeners();
+    }
+  }
+
+  bool shows(String connectionId, String database, String collection) =>
+      this.connectionId == connectionId &&
+      this.database == database &&
+      this.collection == collection;
+
+  @override
+  void dispose() {
+    for (final c in [filter, projection, sort, pipeline]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
 }
 
 /// One SQL editor tab: its text, the connection it targets and the results
@@ -366,6 +476,28 @@ class WorkspaceTabsNotifier extends Notifier<WorkspaceTabsState> {
       connectionId: connectionId,
       object: object,
       rowLimit: ref.read(dataRowLimitProvider),
+    );
+    state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
+  }
+
+  /// Opens a collection, or switches to it if already open.
+  void openCollection(
+    String connectionId,
+    String database,
+    CollectionInfo info,
+  ) {
+    for (final tab in state.tabs) {
+      if (tab is CollectionTab &&
+          tab.shows(connectionId, database, info.name)) {
+        activate(tab.id);
+        return;
+      }
+    }
+    final tab = CollectionTab(
+      connectionId: connectionId,
+      database: database,
+      info: info,
+      limit: ref.read(dataRowLimitProvider),
     );
     state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
   }

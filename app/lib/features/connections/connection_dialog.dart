@@ -289,9 +289,7 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                           Row(
                             children: [
                               Text(
-                                _isEdit
-                                    ? 'Edit Connection'
-                                    : 'New Connection',
+                                _isEdit ? 'Edit Connection' : 'New Connection',
                                 style: theme.textTheme.titleMedium?.copyWith(
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -378,8 +376,11 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                     children: [
                       Row(
                         children: [
-                          Icon(Icons.link_rounded,
-                              size: 15, color: scheme.primary),
+                          Icon(
+                            Icons.link_rounded,
+                            size: 15,
+                            color: scheme.primary,
+                          ),
                           const SizedBox(width: 6),
                           const Text(
                             'Quick Import from Connection URI',
@@ -398,8 +399,7 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                               controller: _urlController,
                               style: monoStyle.copyWith(fontSize: 11.5),
                               decoration: InputDecoration(
-                                hintText:
-                                    'postgresql://…  mongodb+srv://…  redis://…  clickhouse://…',
+                                hintText: 'postgresql://…  mongodb+srv://…  redis://…  clickhouse://…',
                                 hintStyle: TextStyle(
                                   fontSize: 11,
                                   color: scheme.onSurfaceVariant,
@@ -433,9 +433,7 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
               // Tabs Header
               Container(
                 decoration: BoxDecoration(
-                  border: Border(
-                    bottom: BorderSide(color: theme.dividerColor),
-                  ),
+                  border: Border(bottom: BorderSide(color: theme.dividerColor)),
                 ),
                 child: const TabBar(
                   tabAlignment: TabAlignment.start,
@@ -479,8 +477,7 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                               controller: _name,
                               decoration: const InputDecoration(
                                 labelText: 'Connection Name',
-                                hintText:
-                                    'e.g. Analytics Prod (defaults to host/database)',
+                                hintText: 'e.g. Analytics Prod (defaults to host/database)',
                                 isDense: true,
                                 border: OutlineInputBorder(),
                               ),
@@ -499,10 +496,8 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                       hintText: switch (_engine) {
                                         DatabaseEngine.mongodb when _srv =>
                                           'e.g. cluster0.abc.mongodb.net',
-                                        DatabaseEngine.mongodb =>
-                                          'e.g. localhost, or h1:27017,h2:27017',
-                                        _ =>
-                                          'e.g. localhost, 127.0.0.1, rds.aws.com',
+                                        DatabaseEngine.mongodb => 'e.g. localhost, or h1:27017,h2:27017',
+                                        _ => 'e.g. localhost, 127.0.0.1, rds.aws.com',
                                       },
                                       isDense: true,
                                       border: const OutlineInputBorder(),
@@ -511,31 +506,31 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                   ),
                                 ),
                                 if (_usesPort) ...[
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  flex: 1,
-                                  child: TextFormField(
-                                    controller: _port,
-                                    decoration: InputDecoration(
-                                      labelText: 'Port *',
-                                      hintText: '${_engine.defaultPort}',
-                                      isDense: true,
-                                      border: const OutlineInputBorder(),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    flex: 1,
+                                    child: TextFormField(
+                                      controller: _port,
+                                      decoration: InputDecoration(
+                                        labelText: 'Port *',
+                                        hintText: '${_engine.defaultPort}',
+                                        isDense: true,
+                                        border: const OutlineInputBorder(),
+                                      ),
+                                      keyboardType: TextInputType.number,
+                                      inputFormatters: [
+                                        FilteringTextInputFormatter.digitsOnly,
+                                      ],
+                                      validator: (v) {
+                                        final port = int.tryParse(v ?? '');
+                                        return port == null ||
+                                                port < 1 ||
+                                                port > 65535
+                                            ? '1–65535'
+                                            : null;
+                                      },
                                     ),
-                                    keyboardType: TextInputType.number,
-                                    inputFormatters: [
-                                      FilteringTextInputFormatter.digitsOnly,
-                                    ],
-                                    validator: (v) {
-                                      final port = int.tryParse(v ?? '');
-                                      return port == null ||
-                                              port < 1 ||
-                                              port > 65535
-                                          ? '1–65535'
-                                          : null;
-                                    },
                                   ),
-                                ),
                                 ],
                               ],
                             ),
@@ -566,8 +561,7 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                   child: TextFormField(
                                     controller: _database,
                                     decoration: InputDecoration(
-                                      labelText:
-                                          _engine == DatabaseEngine.redis
+                                      labelText: _engine == DatabaseEngine.redis
                                           ? 'Database index *'
                                           : 'Database Name *',
                                       hintText:
@@ -648,7 +642,8 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                               onChanged: (_) => _passwordTouched = true,
                               decoration: InputDecoration(
                                 labelText: 'Password',
-                                hintText: _isEdit && widget.existing!.savePassword
+                                hintText:
+                                    _isEdit && widget.existing!.savePassword
                                     ? 'Saved in secure store (leave empty to keep)'
                                     : 'Enter database password',
                                 isDense: true,
@@ -705,10 +700,12 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                     vertical: 2,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: Color(_color).withValues(alpha: 0.15),
+                                    color: Color(_color)
+                                        .withValues(alpha: 0.15),
                                     borderRadius: BorderRadius.circular(6),
                                     border: Border.all(
-                                      color: Color(_color).withValues(alpha: 0.4),
+                                      color: Color(_color)
+                                          .withValues(alpha: 0.4),
                                     ),
                                   ),
                                   child: Row(
@@ -752,14 +749,15 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                       ),
                                       decoration: BoxDecoration(
                                         color: _color == color
-                                            ? Color(color).withValues(alpha: 0.18)
+                                            ? Color(color)
+                                                  .withValues(alpha: 0.18)
                                             : scheme.surfaceContainerLowest,
                                         borderRadius: BorderRadius.circular(20),
                                         border: Border.all(
                                           color: _color == color
                                               ? Color(color)
                                               : scheme.outlineVariant
-                                                  .withValues(alpha: 0.6),
+                                                    .withValues(alpha: 0.6),
                                           width: _color == color ? 1.5 : 1,
                                         ),
                                       ),
@@ -818,14 +816,15 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                           mode == TlsMode.disable
                                               ? Icons.lock_open_rounded
                                               : (mode == TlsMode.require
-                                                  ? Icons.lock_outline_rounded
-                                                  : Icons.verified_user_rounded),
+                                                    ? Icons.lock_outline_rounded
+                                                    : Icons
+                                                          .verified_user_rounded),
                                           size: 16,
                                           color: mode == TlsMode.disable
                                               ? Colors.amber.shade700
                                               : (mode == TlsMode.require
-                                                  ? const Color(0xFF0284C7)
-                                                  : const Color(0xFF10B981)),
+                                                    ? const Color(0xFF0284C7)
+                                                    : const Color(0xFF10B981)),
                                         ),
                                         const SizedBox(width: 8),
                                         Text(mode.label),
@@ -844,7 +843,9 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                 color: scheme.surfaceContainerLowest,
                                 borderRadius: BorderRadius.circular(10),
                                 border: Border.all(
-                                  color: scheme.outlineVariant.withValues(alpha: 0.6),
+                                  color: scheme.outlineVariant.withValues(
+                                    alpha: 0.6,
+                                  ),
                                 ),
                               ),
                               child: Column(
@@ -860,7 +861,8 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                       const SizedBox(width: 6),
                                       Text(
                                         switch (_tlsMode) {
-                                          TlsMode.disable => 'Unencrypted (Plaintext)',
+                                          TlsMode.disable =>
+                                            'Unencrypted (Plaintext)',
                                           TlsMode.require =>
                                             'Encrypted (No Verification)',
                                           TlsMode.verifyFull =>
@@ -877,12 +879,9 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                   const SizedBox(height: 4),
                                   Text(
                                     switch (_tlsMode) {
-                                      TlsMode.disable =>
-                                        'Data is sent unencrypted over the wire. Best for local development and private internal Docker networks.',
-                                      TlsMode.require =>
-                                        'Connection is encrypted using TLS/SSL, but the server certificate is not verified. Common for hosted providers (e.g. AWS RDS, Heroku, Supabase).',
-                                      TlsMode.verifyFull =>
-                                        'Connection is strictly verified against standard trusted Root Certificate Authorities. Fails if the server certificate is self-signed or invalid.',
+                                      TlsMode.disable => 'Data is sent unencrypted over the wire. Best for local development and private internal Docker networks.',
+                                      TlsMode.require => 'Connection is encrypted using TLS/SSL, but the server certificate is not verified. Common for hosted providers (e.g. AWS RDS, Heroku, Supabase).',
+                                      TlsMode.verifyFull => 'Connection is strictly verified against standard trusted Root Certificate Authorities. Fails if the server certificate is self-signed or invalid.',
                                     },
                                     style: TextStyle(
                                       fontSize: 11.5,
@@ -1152,10 +1151,30 @@ Future<SqlDriver?> connectSqlWithPrompt(
 /// one that is already connected, else the first saved one. With no saved
 /// connections, asks the user to create one first.
 Future<void> openNewSqlEditor(BuildContext context, WidgetRef ref) async {
-  final connections = ref.read(connectionsProvider).value ?? const [];
+  // Only SQL engines have an editor; MongoDB and Redis are browsed from
+  // the sidebar.
+  final all = ref.read(connectionsProvider).value ?? const [];
+  final connections = [
+    for (final c in all)
+      if (c.engine.family == EngineFamily.relational) c,
+  ];
   ConnectionConfig? config;
   if (connections.isEmpty) {
+    if (all.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'SQL editors need a SQL connection. Open MongoDB collections '
+            'and Redis keys from the sidebar.',
+          ),
+        ),
+      );
+      return;
+    }
     config = await showConnectionDialog(context);
+    if (config != null && config.engine.family != EngineFamily.relational) {
+      return;
+    }
   } else {
     final preferred = [
       ?ref.read(workspaceTabsProvider).active?.connectionId,

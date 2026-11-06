@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
+import '../../drivers/document.dart';
 import '../../drivers/driver.dart';
 import '../../drivers/postgres/postgres_sql.dart';
 import '../../state/workspace_tabs.dart';
@@ -210,7 +211,11 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
             _ => null,
           },
           itemBuilder: (_) => [
-            const PopupMenuItem(value: 'editor', child: Text('New SQL editor')),
+            if (config.engine.family == EngineFamily.relational)
+              const PopupMenuItem(
+                value: 'editor',
+                child: Text('New SQL editor'),
+              ),
             if (session?.status == SessionStatus.connected) ...[
               const PopupMenuItem(value: 'refresh', child: Text('Refresh')),
               const PopupMenuItem(
@@ -236,8 +241,99 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
             ),
           ),
         ),
-      if (expanded) ..._schemaNodes(config),
+      if (expanded)
+        ...switch (config.engine.family) {
+          EngineFamily.relational => _schemaNodes(config),
+          EngineFamily.document => _documentNodes(config),
+          EngineFamily.keyValue => const <Widget>[],
+        },
     ];
+  }
+
+  /// MongoDB: databases, then their collections and views.
+  List<Widget> _documentNodes(ConnectionConfig config) {
+    final databases = ref.watch(documentDatabasesProvider(config.id));
+    return databases.when(
+      loading: () => [const _Loading(depth: 1)],
+      error: (e, _) => [_ErrorRow(depth: 1, error: e)],
+      data: (list) => [
+        for (final database in list)
+          if (_filter.isEmpty ||
+              database.toLowerCase().contains(_filter) ||
+              _isSchemaExpanded(config, database)) ...[
+            _TreeRow(
+              depth: 1,
+              expanded: _isSchemaExpanded(config, database),
+              leading: const Icon(Icons.storage_rounded, size: 16),
+              label: database,
+              onTap: () => _toggle('s:${config.id}:$database'),
+            ),
+            if (_isSchemaExpanded(config, database))
+              ..._collectionNodes(config, database),
+          ],
+      ],
+    );
+  }
+
+  List<Widget> _collectionNodes(ConnectionConfig config, String database) {
+    final collections = ref.watch(collectionsProvider((config.id, database)));
+    return collections.when(
+      loading: () => [const _Loading(depth: 2)],
+      error: (e, _) => [_ErrorRow(depth: 2, error: e)],
+      data: (list) {
+        final visible = [
+          for (final c in list)
+            if (_filter.isEmpty || c.name.toLowerCase().contains(_filter)) c,
+        ];
+        if (visible.isEmpty) {
+          return [
+            _Message(list.isEmpty ? 'No collections' : 'No matches', depth: 2),
+          ];
+        }
+        void open(CollectionInfo info) => ref
+            .read(workspaceTabsProvider.notifier)
+            .openCollection(config.id, database, info);
+        return [
+          for (final info in visible)
+            _TreeRow(
+              depth: 2,
+              leading: Icon(
+                info.kind == CollectionKind.view
+                    ? Icons.visibility_rounded
+                    : Icons.folder_copy_outlined,
+                size: 16,
+                color: const Color(0xFF10B981),
+              ),
+              label: info.name,
+              detail: info.kind == CollectionKind.collection
+                  ? null
+                  : info.kind.label.toLowerCase(),
+              onTap: () => open(info),
+              onContextMenu: (position) async {
+                final action = await showMenu<String>(
+                  context: context,
+                  position: RelativeRect.fromLTRB(
+                    position.dx,
+                    position.dy,
+                    position.dx,
+                    position.dy,
+                  ),
+                  items: const [
+                    PopupMenuItem(value: 'open', child: Text('Open')),
+                    PopupMenuItem(value: 'copy', child: Text('Copy name')),
+                  ],
+                );
+                switch (action) {
+                  case 'open':
+                    open(info);
+                  case 'copy':
+                    await Clipboard.setData(ClipboardData(text: info.name));
+                }
+              },
+            ),
+        ];
+      },
+    );
   }
 
   List<Widget> _schemaNodes(ConnectionConfig config) {
@@ -690,11 +786,9 @@ const _relationFolders = [
   }, hideWhenEmpty: true),
   _RelationFolder('Views', {DbObjectKind.view}),
   _RelationFolder('Materialized Views', {DbObjectKind.materializedView}),
-  _RelationFolder(
-    'Sequences',
-    {DbObjectKind.sequence},
-    feature: SqlFeature.sequences,
-  ),
+  _RelationFolder('Sequences', {
+    DbObjectKind.sequence,
+  }, feature: SqlFeature.sequences),
 ];
 
 /// Folders under a table-like object.

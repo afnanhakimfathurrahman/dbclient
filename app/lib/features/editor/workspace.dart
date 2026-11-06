@@ -12,6 +12,7 @@ import '../../state/workspace_tabs.dart';
 import '../../state/providers.dart';
 import '../connections/connection_dialog.dart';
 import '../history/history_dialog.dart';
+import '../documents/collection_view.dart';
 import '../inspector/inspector_view.dart';
 import '../results/results_view.dart';
 
@@ -34,6 +35,10 @@ class Workspace extends ConsumerWidget {
           child: switch (active) {
             EditorTab() => EditorView(key: ValueKey(active.id), tab: active),
             InspectorTab() => InspectorView(
+              key: ValueKey(active.id),
+              tab: active,
+            ),
+            CollectionTab() => CollectionView(
               key: ValueKey(active.id),
               tab: active,
             ),
@@ -183,9 +188,11 @@ class _TabChip extends StatelessWidget {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : Icon(
-                          tab is InspectorTab
-                              ? Icons.table_chart_rounded
-                              : Icons.terminal_rounded,
+                          switch (tab) {
+                            InspectorTab() => Icons.table_chart_rounded,
+                            CollectionTab() => Icons.data_object_rounded,
+                            EditorTab() => Icons.terminal_rounded,
+                          },
                           size: 14,
                           color: active
                               ? (color ?? scheme.primary)
