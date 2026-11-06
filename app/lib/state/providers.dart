@@ -8,6 +8,7 @@ import '../data/repositories.dart';
 import '../data/secret_store.dart';
 import '../drivers/driver.dart';
 import '../drivers/registry.dart';
+import 'workspace_tabs.dart';
 
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
   final db = AppDatabase();
@@ -195,4 +196,17 @@ class AppThemeNotifier extends Notifier<AppThemePreset> {
 
 final appThemeProvider = NotifierProvider<AppThemeNotifier, AppThemePreset>(
   AppThemeNotifier.new,
+);
+
+/// Rows loaded by the inspector's Data tab. Kept for the session (not
+/// saved): a changed limit applies to tables opened afterwards too.
+class DataRowLimitNotifier extends Notifier<int> {
+  @override
+  int build() => InspectorTab.defaultRowLimit;
+
+  void set(int limit) => state = limit;
+}
+
+final dataRowLimitProvider = NotifierProvider<DataRowLimitNotifier, int>(
+  DataRowLimitNotifier.new,
 );
