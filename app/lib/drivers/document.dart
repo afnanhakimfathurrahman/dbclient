@@ -40,6 +40,9 @@ abstract class DocumentDriver extends DatabaseDriver {
   Future<List<String>> listDatabases();
   Future<List<CollectionInfo>> listCollections(String database);
 
+  /// Creates an empty collection; creates [database] too if it is new.
+  Future<void> createCollection(String database, String name);
+
   Future<DocumentPage> find(
     String database,
     String collection, {

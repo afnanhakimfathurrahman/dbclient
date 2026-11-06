@@ -5,12 +5,22 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
+import '../../drivers/create_sql.dart';
 import '../../drivers/document.dart';
 import '../../drivers/driver.dart';
 import '../../drivers/sql_dialect.dart';
+import '../../drivers/sql_splitter.dart';
 import '../../state/workspace_tabs.dart';
 import '../../state/providers.dart';
 import '../connections/connection_dialog.dart';
+import '../inspector/dialogs/column_dialog.dart';
+import '../inspector/dialogs/constraint_dialog.dart';
+import '../inspector/dialogs/index_dialog.dart';
+import '../inspector/dialogs/trigger_dialog.dart';
+import 'create_dialogs.dart';
+
+/// A context menu entry: label and what it does.
+typedef _MenuAction = (String label, Future<void> Function() run);
 
 /// Connection list with a lazily loaded, DBeaver-style object tree:
 /// schema → Tables/Views/… folders → object → Columns/Indexes/… folders.
@@ -80,6 +90,328 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
   }
 
   void _refresh(ConnectionConfig config) => invalidateMetadata(ref, config.id);
+
+  void _notify(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  /// Shows [actions] as a context menu at [position] and runs the chosen one.
+  Future<void> _contextMenu(Offset position, List<_MenuAction> actions) async {
+    final index = await showMenu<int>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        position.dx,
+        position.dy,
+      ),
+      items: [
+        for (var i = 0; i < actions.length; i++)
+          PopupMenuItem(value: i, child: Text(actions[i].$1)),
+      ],
+    );
+    if (index != null && mounted) await actions[index].$2();
+  }
+
+  /// Context menu handler for [actions]; null (no menu) when there are none.
+  void Function(Offset)? _menuFor(List<_MenuAction> actions) =>
+      actions.isEmpty ? null : (position) => _contextMenu(position, actions);
+
+  /// Runs DDL from a create dialog and reloads the connection's tree. A
+  /// single statement runs on its own (CREATE DATABASE can't run inside a
+  /// transaction); several run in one transaction. Throws if not connected,
+  /// so the dialog stays open and shows why.
+  Future<void> _executeDdl(
+    ConnectionConfig config,
+    String sql, {
+    required String successMessage,
+  }) async {
+    final driver = await connectSqlWithPrompt(context, ref, config);
+    if (driver == null) throw const DriverException('Not connected');
+    final statements = [for (final s in splitSql(sql)) s.text];
+    if (statements.length == 1) {
+      await driver.execute(statements.single);
+    } else {
+      await driver.executeAll(statements);
+    }
+    invalidateMetadata(ref, config.id);
+    _notify(successMessage);
+  }
+
+  void _openSql(ConnectionConfig config, String sql) =>
+      _openEditor(config, initialText: sql);
+
+  /// Create actions of a connection row, while connected.
+  List<_MenuAction> _connectionActions(ConnectionConfig config) {
+    final postgres = config.engine == DatabaseEngine.postgres;
+    final driver = ref.watch(sqlDriverProvider(config.id));
+    return switch (config.engine.family) {
+      EngineFamily.relational when driver != null => [
+        (
+          'Create database…',
+          () async {
+            final created = await showCreateNamedDialog(
+              context,
+              title: 'Create Database',
+              subtitle: config.name,
+              icon: Icons.storage_rounded,
+              fieldLabel: 'Database name',
+              buildSql: (name) => buildCreateDatabaseSql(driver.dialect, name),
+              onExecute: (sql) => _executeDdl(
+                config,
+                sql,
+                successMessage: postgres
+                    // The tree shows the schemas of the connected database.
+                    ? 'Database created. To browse it, edit the connection '
+                          'and set it as the database.'
+                    : 'Database created',
+              ),
+              onOpenInSql: (sql) => _openSql(config, sql),
+            );
+            if (created == true && !postgres) _expandConnection(config);
+          },
+        ),
+        if (postgres)
+          (
+            'Create schema…',
+            () async {
+              final created = await showCreateNamedDialog(
+                context,
+                title: 'Create Schema',
+                subtitle: '${config.name} · ${config.database}',
+                icon: Icons.account_tree_outlined,
+                fieldLabel: 'Schema name',
+                buildSql: (name) => buildCreateSchemaSql(driver.dialect, name),
+                onExecute: (sql) =>
+                    _executeDdl(config, sql, successMessage: 'Schema created'),
+                onOpenInSql: (sql) => _openSql(config, sql),
+              );
+              if (created == true) _expandConnection(config);
+            },
+          ),
+      ],
+      EngineFamily.document
+          when ref.watch(documentDriverProvider(config.id)) != null =>
+        [('Create database…', () => _createCollection(config))],
+      _ => const [],
+    };
+  }
+
+  void _expandConnection(ConnectionConfig config) {
+    if (mounted) setState(() => _expanded.add('c:${config.id}'));
+  }
+
+  /// MongoDB: a collection in [database], or a new database with its first
+  /// collection when [database] is null.
+  Future<void> _createCollection(
+    ConnectionConfig config, [
+    String? database,
+  ]) async {
+    String? created;
+    await showCreateCollectionDialog(
+      context,
+      database: database,
+      onCreate: (database, collection) async {
+        final driver = ref.read(documentDriverProvider(config.id));
+        if (driver == null) throw const DriverException('Not connected');
+        await driver.createCollection(database, collection);
+        created = database;
+        invalidateMetadata(ref, config.id);
+        _notify('Collection "$collection" created');
+      },
+    );
+    if (created case final name? when mounted) {
+      setState(
+        () => _expanded
+          ..add('c:${config.id}')
+          ..add('s:${config.id}:$name'),
+      );
+    }
+  }
+
+  /// Create actions of a schema (database on MySQL and ClickHouse), or of
+  /// one of its folders when [folder] is given ("Tables", "Views"…).
+  List<_MenuAction> _schemaActions(
+    ConnectionConfig config,
+    String schema, [
+    String? folder,
+  ]) {
+    final driver = ref.watch(sqlDriverProvider(config.id));
+    if (driver == null) return const [];
+    final dialect = driver.dialect;
+    bool show(String name) => folder == null || folder == name;
+    return [
+      if (show('Tables'))
+        (
+          'Create table…',
+          () async {
+            final created = await showCreateTableDialog(
+              context,
+              dialect: dialect,
+              schema: schema,
+              onExecute: (sql) =>
+                  _executeDdl(config, sql, successMessage: 'Table created'),
+              onOpenInSql: (sql) => _openSql(config, sql),
+            );
+            if (created == true && mounted) {
+              setState(
+                () => _expanded
+                  ..add('s:${config.id}:$schema')
+                  ..add('f:${config.id}:$schema:Tables'),
+              );
+            }
+          },
+        ),
+      if (show('Views'))
+        (
+          'Create view…',
+          () => _openEditor(
+            config,
+            initialText: createViewTemplate(dialect, schema),
+          ),
+        ),
+      if (show('Functions') && driver.features.contains(SqlFeature.routines))
+        (
+          'Create function…',
+          () => _openEditor(
+            config,
+            initialText: createFunctionTemplate(dialect, schema),
+          ),
+        ),
+      if (show('Sequences') && driver.features.contains(SqlFeature.sequences))
+        (
+          'Create sequence…',
+          () => _openEditor(
+            config,
+            initialText: createSequenceTemplate(dialect, schema),
+          ),
+        ),
+    ];
+  }
+
+  /// Create actions of a Columns/Indexes/… folder under [object]. With
+  /// [SqlFeature.schemaEditing] they open the inspector's dialogs (which
+  /// generate PostgreSQL); otherwise only indexes get an editor template.
+  List<_MenuAction> _objectFolderActions(
+    ConnectionConfig config,
+    DbObject object,
+    _ObjectFolder folder,
+  ) {
+    final driver = ref.watch(sqlDriverProvider(config.id));
+    if (driver == null) return const [];
+    final key = (config.id, object.schema, object.name);
+    final kind = object.kind;
+    Future<List<ColumnInfo>> columns() async {
+      try {
+        return await ref.read(columnsProvider(key).future);
+      } on Object {
+        return const [];
+      }
+    }
+
+    Future<void> execute(String sql, String message) =>
+        _executeDdl(config, sql, successMessage: message);
+    void openSql(String sql) => _openSql(config, sql);
+
+    if (!driver.features.contains(SqlFeature.schemaEditing)) {
+      return [
+        if (folder == _ObjectFolder.indexes && kind.isTable)
+          (
+            'Create index…',
+            () async {
+              final list = await columns();
+              await _openEditor(
+                config,
+                initialText: createIndexTemplate(
+                  driver.dialect,
+                  schema: object.schema,
+                  table: object.name,
+                  column: list.firstOrNull?.name,
+                ),
+              );
+            },
+          ),
+      ];
+    }
+    // Which objects can have what, as in the inspector.
+    return switch (folder) {
+      _ObjectFolder.columns
+          when kind.isTable || kind == DbObjectKind.foreignTable =>
+        [
+          (
+            'Add column…',
+            () async => showColumnDialog(
+              context,
+              schema: object.schema,
+              table: object.name,
+              onExecute: (sql) => execute(sql, 'Column added'),
+              onOpenInSql: openSql,
+            ),
+          ),
+        ],
+      _ObjectFolder.constraints ||
+      _ObjectFolder.foreignKeys when kind.isTable => [
+        (
+          folder == _ObjectFolder.foreignKeys
+              ? 'Add foreign key…'
+              : 'Add constraint…',
+          () async {
+            final list = await columns();
+            if (!mounted) return;
+            final foreignKey = folder == _ObjectFolder.foreignKeys;
+            await showConstraintDialog(
+              context,
+              schema: object.schema,
+              table: object.name,
+              columns: list,
+              initialKind: foreignKey ? ConstraintKind.foreignKey : null,
+              onExecute: (sql) => execute(
+                sql,
+                foreignKey ? 'Foreign key added' : 'Constraint added',
+              ),
+              onOpenInSql: openSql,
+            );
+          },
+        ),
+      ],
+      _ObjectFolder.indexes
+          when kind.isTable || kind == DbObjectKind.materializedView =>
+        [
+          (
+            'Create index…',
+            () async {
+              final list = await columns();
+              if (!mounted) return;
+              await showIndexDialog(
+                context,
+                schema: object.schema,
+                table: object.name,
+                columns: list,
+                onExecute: (sql) => execute(sql, 'Index created'),
+                onOpenInSql: openSql,
+              );
+            },
+          ),
+        ],
+      _ObjectFolder.triggers when kind.isTable || kind == DbObjectKind.view => [
+        (
+          'Create trigger…',
+          () async => showTriggerDialog(
+            context,
+            schema: object.schema,
+            table: object.name,
+            isView: kind == DbObjectKind.view,
+            onExecute: (sql) => execute(sql, 'Trigger created'),
+            onOpenInSql: openSql,
+          ),
+        ),
+      ],
+      _ => const [],
+    };
+  }
 
   Future<void> _delete(ConnectionConfig config) async {
     final confirmed = await showDialog<bool>(
@@ -212,6 +544,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
         label: config.name,
         subtitle: '${config.engine.label} · ${config.displayAddress}',
         onTap: () => _toggleConnection(config),
+        onContextMenu: _menuFor(_connectionActions(config)),
         trailing: PopupMenuButton<String>(
           tooltip: 'Actions',
           icon: const Icon(Icons.more_vert, size: 18),
@@ -307,6 +640,12 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
               leading: const Icon(Icons.storage_rounded, size: 16),
               label: database,
               onTap: () => _toggle('s:${config.id}:$database'),
+              onContextMenu: _menuFor([
+                (
+                  'Create collection…',
+                  () => _createCollection(config, database),
+                ),
+              ]),
             ),
             if (_isSchemaExpanded(config, database))
               ..._collectionNodes(config, database),
@@ -389,6 +728,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
             leading: const Icon(Icons.account_tree_outlined, size: 16),
             label: schema,
             onTap: () => _toggle('s:${config.id}:$schema'),
+            onContextMenu: _menuFor(_schemaActions(config, schema)),
           ),
           if (_isSchemaExpanded(config, schema))
             ..._schemaFolders(config, schema),
@@ -434,6 +774,9 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
               count: visible.length,
               expanded: open,
               onTap: () => _toggle(key),
+              onContextMenu: _menuFor(
+                _schemaActions(config, schema, folder.label),
+              ),
             ),
           );
           if (open) {
@@ -506,6 +849,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
         label: folder.label,
         expanded: open,
         onTap: () => _toggle(key),
+        onContextMenu: _menuFor(_objectFolderActions(config, object, folder)),
       ),
       if (open) ..._folderItems(config, object, folder, depth + 1),
     ];
@@ -641,6 +985,7 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
         count: routines?.value?.length,
         expanded: open,
         onTap: () => _toggle(key),
+        onContextMenu: _menuFor(_schemaActions(config, schema, 'Functions')),
       ),
       if (routines != null)
         ..._load(
@@ -860,6 +1205,7 @@ class _FolderRow extends StatelessWidget {
     required this.expanded,
     required this.onTap,
     this.count,
+    this.onContextMenu,
   });
 
   final int depth;
@@ -869,6 +1215,9 @@ class _FolderRow extends StatelessWidget {
 
   /// Item count, when known.
   final int? count;
+
+  /// Create actions for the folder's kind of item; see [_TreeRow].
+  final void Function(Offset position)? onContextMenu;
 
   @override
   Widget build(BuildContext context) {
@@ -883,6 +1232,7 @@ class _FolderRow extends StatelessWidget {
       label: label,
       detail: count?.toString(),
       onTap: onTap,
+      onContextMenu: onContextMenu,
     );
   }
 }

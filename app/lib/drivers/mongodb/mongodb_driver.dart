@@ -148,6 +148,19 @@ class MongoDriver implements DocumentDriver {
       });
 
   @override
+  Future<void> createCollection(String database, String name) =>
+      _guardIn(database, () async {
+        final reply = await (await _db(database)).createCollection(name);
+        // Server errors (e.g. NamespaceExists) come back as ok: 0.
+        if (reply['ok'] != 1) {
+          throw DriverException(
+            '${reply['errmsg'] ?? 'Could not create the collection'}',
+            code: reply['codeName']?.toString(),
+          );
+        }
+      });
+
+  @override
   Future<DocumentPage> find(
     String database,
     String collection, {
