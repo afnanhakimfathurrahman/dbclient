@@ -49,6 +49,9 @@ dependencies:
   share_plus: ^13.3.1
   shared_preferences: ^2.5.6
   http: ^1.6.0
+  mongo_dart: ^0.10.10
+  fixnum: ^1.1.1
+  decimal: ^3.2.6
 
 dev_dependencies:
   flutter_test:

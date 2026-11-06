@@ -6,6 +6,7 @@ import '../app/theme.dart';
 import '../data/app_database.dart';
 import '../data/repositories.dart';
 import '../data/secret_store.dart';
+import '../drivers/document.dart';
 import '../drivers/driver.dart';
 import '../drivers/registry.dart';
 import 'workspace_tabs.dart';
@@ -126,8 +127,7 @@ typedef RelationKey = (String connectionId, String schema, String object);
 /// Builds a provider that loads per-object metadata (columns, indexes…) with
 /// [load] while the connection is open.
 FutureProviderFamily<List<T>, RelationKey> _objectMetadata<T>(
-  Future<List<T>> Function(SqlDriver driver, String schema, String object)
-  load,
+  Future<List<T>> Function(SqlDriver driver, String schema, String object) load,
 ) {
   return FutureProvider.family<List<T>, RelationKey>((ref, key) async {
     final driver = ref.watch(sqlDriverProvider(key.$1));
@@ -156,6 +156,8 @@ final routinesProvider =
 
 /// Drops all cached metadata for a refresh.
 void invalidateMetadata(WidgetRef ref, String connectionId) {
+  ref.invalidate(documentDatabasesProvider(connectionId));
+  ref.invalidate(collectionsProvider);
   ref.invalidate(schemasProvider(connectionId));
   ref.invalidate(objectsProvider);
   ref.invalidate(columnsProvider);
@@ -217,3 +219,32 @@ class DataRowLimitNotifier extends Notifier<int> {
 final dataRowLimitProvider = NotifierProvider<DataRowLimitNotifier, int>(
   DataRowLimitNotifier.new,
 );
+
+/// The document-store driver for a connection, or null if not connected or
+/// not a document engine.
+final documentDriverProvider = Provider.family<DocumentDriver?, String>((
+  ref,
+  id,
+) {
+  final driver = ref.watch(driverProvider(id));
+  return driver is DocumentDriver ? driver : null;
+});
+
+final documentDatabasesProvider = FutureProvider.family<List<String>, String>((
+  ref,
+  connectionId,
+) async {
+  final driver = ref.watch(documentDriverProvider(connectionId));
+  if (driver == null) return const [];
+  return driver.listDatabases();
+});
+
+final collectionsProvider =
+    FutureProvider.family<
+      List<CollectionInfo>,
+      (String connectionId, String database)
+    >((ref, key) async {
+      final driver = ref.watch(documentDriverProvider(key.$1));
+      if (driver == null) return const [];
+      return driver.listCollections(key.$2);
+    });
