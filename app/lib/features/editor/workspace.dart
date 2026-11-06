@@ -8,6 +8,7 @@ import 'package:re_highlight/styles/atom-one-light.dart';
 
 import '../../app/theme.dart';
 import '../../drivers/driver.dart';
+import '../../drivers/sql_dialect.dart';
 import '../../state/workspace_tabs.dart';
 import '../../state/providers.dart';
 import '../connections/connection_dialog.dart';
@@ -16,6 +17,7 @@ import '../documents/collection_view.dart';
 import '../inspector/inspector_view.dart';
 import '../keyvalue/redis_view.dart';
 import '../results/results_view.dart';
+import 'sql_autocomplete.dart';
 
 /// Editor tabs plus the active tab's editor and results.
 class Workspace extends ConsumerWidget {
@@ -515,6 +517,16 @@ class EditorView extends ConsumerStatefulWidget {
 }
 
 class _EditorViewState extends ConsumerState<EditorView> {
+  /// Completion from the connection's cached metadata; reads the tab's
+  /// current connection each time, since it can be switched.
+  late final _completion = SqlPromptsBuilder(
+    controller: widget.tab.controller,
+    catalog: () => ProviderSqlCatalog(ref, widget.tab.connectionId),
+    dialect: () =>
+        ref.read(sqlDriverProvider(widget.tab.connectionId))?.dialect ??
+        postgresDialect,
+  );
+
   double _editorFraction = 0.45;
 
   EditorTab get tab => widget.tab;
@@ -612,7 +624,10 @@ class _EditorViewState extends ConsumerState<EditorView> {
                   ),
                   SizedBox(
                     height: editorHeight,
-                    child: SqlEditor(controller: tab.controller),
+                    child: SqlEditor(
+                      controller: tab.controller,
+                      completion: _completion,
+                    ),
                   ),
                   _HorizontalSplitter(
                     onDragUpdate: (dy) => setState(() {
@@ -872,10 +887,18 @@ class _SqlEditorShortcuts extends DefaultCodeShortcutsActivatorsBuilder {
 
 /// SQL code editor with Postgres highlighting. Also used read-only for DDL.
 class SqlEditor extends StatelessWidget {
-  const SqlEditor({super.key, required this.controller, this.readOnly = false});
+  const SqlEditor({
+    super.key,
+    required this.controller,
+    this.readOnly = false,
+    this.completion,
+  });
 
   final CodeLineEditingController controller;
   final bool readOnly;
+
+  /// Autocomplete source; none for read-only views.
+  final CodeAutocompletePromptsBuilder? completion;
 
   @override
   Widget build(BuildContext context) {
@@ -885,7 +908,7 @@ class SqlEditor extends StatelessWidget {
         (theme.brightness == Brightness.dark
             ? atomOneDarkTheme
             : atomOneLightTheme);
-    return CodeEditor(
+    final editor = CodeEditor(
       controller: controller,
       autofocus: !readOnly,
       readOnly: readOnly,
@@ -918,6 +941,14 @@ class SqlEditor extends StatelessWidget {
               ],
             );
           },
+    );
+    final completion = this.completion;
+    if (completion == null || readOnly) return editor;
+    return CodeAutocomplete(
+      viewBuilder: (context, notifier, onSelected) =>
+          SqlCompletionList(notifier: notifier, onSelected: onSelected),
+      promptsBuilder: completion,
+      child: editor,
     );
   }
 }
