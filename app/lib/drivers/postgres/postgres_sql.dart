@@ -4,7 +4,11 @@
 /// catalog metadata here. Kept free of I/O so it can be unit-tested.
 library;
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import '../driver.dart';
+import '../value_format.dart';
 
 /// Quotes an identifier unless it is a plain lowercase name that isn't a
 /// reserved word.
@@ -20,6 +24,37 @@ String qualifiedName(String schema, String name) =>
     '${quoteIdent(schema)}.${quoteIdent(name)}';
 
 String quoteLiteral(String value) => "'${value.replaceAll("'", "''")}'";
+
+/// Text a user edits for a decoded value: what Postgres accepts as input for
+/// a column of [dataType] (arrays as `{…}`, JSON compact, bytea in full).
+/// Null for SQL NULL.
+String? pgEditText(Object? value, String dataType) => switch (value) {
+  null => null,
+  // Before List: bytea decodes to Uint8List, which is a List.
+  Uint8List() => formatValue(value, maxBytes: value.length),
+  List() when dataType.endsWith('[]') => pgArrayLiteral(value),
+  Map() || List() => jsonEncode(value),
+  _ => formatValue(value),
+};
+
+/// Postgres array input syntax, e.g. `{1,"a b",NULL}`.
+String pgArrayLiteral(List<Object?> values) {
+  final items = values.map((v) {
+    if (v == null) return 'NULL';
+    if (v is List) return pgArrayLiteral(v);
+    final text = pgEditText(v, '')!;
+    return '"${text.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
+  });
+  return '{${items.join(',')}}';
+}
+
+/// A typed SQL literal from input text: `'42'::integer`, or NULL. Postgres
+/// parses the text as it would user input, so this works for any type.
+String pgTypedLiteral(String? text, String dataType) {
+  if (text == null) return 'NULL';
+  final literal = quoteLiteral(text);
+  return dataType.isEmpty ? literal : '$literal::$dataType';
+}
 
 class PgColumnDdl {
   const PgColumnDdl({
@@ -301,12 +336,14 @@ String buildAddConstraintSql({
       final refCols = referencedColumns.isEmpty
           ? ''
           : ' (${referencedColumns.map(quoteIdent).join(', ')})';
-      final onDelClause = (onDelete != null &&
+      final onDelClause =
+          (onDelete != null &&
               onDelete.isNotEmpty &&
               onDelete.toUpperCase() != 'NO ACTION')
           ? ' ON DELETE $onDelete'
           : '';
-      final onUpdClause = (onUpdate != null &&
+      final onUpdClause =
+          (onUpdate != null &&
               onUpdate.isNotEmpty &&
               onUpdate.toUpperCase() != 'NO ACTION')
           ? ' ON UPDATE $onUpdate'
@@ -368,10 +405,9 @@ String buildCreateIndexSql({
   final idx = quoteIdent(name);
   final cols = columns.map(quoteIdent).join(', ');
   final uniqueClause = isUnique ? 'UNIQUE ' : '';
-  final methodClause =
-      method.isNotEmpty && method.toLowerCase() != 'btree'
-          ? ' USING $method'
-          : '';
+  final methodClause = method.isNotEmpty && method.toLowerCase() != 'btree'
+      ? ' USING $method'
+      : '';
   final whereClause = (predicate != null && predicate.trim().isNotEmpty)
       ? ' WHERE ${predicate.trim()}'
       : '';

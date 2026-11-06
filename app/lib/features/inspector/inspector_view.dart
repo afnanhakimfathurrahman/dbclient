@@ -11,6 +11,7 @@ import '../../drivers/driver.dart';
 import '../../drivers/postgres/postgres_sql.dart';
 import '../../drivers/sql_splitter.dart';
 import '../../drivers/value_format.dart';
+import '../../state/data_editor.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
 import '../connections/connection_dialog.dart';
@@ -21,6 +22,7 @@ import 'dialogs/column_dialog.dart';
 import 'dialogs/constraint_dialog.dart';
 import 'dialogs/drop_confirm_dialog.dart';
 import 'dialogs/index_dialog.dart';
+import 'dialogs/save_changes_dialog.dart';
 import 'dialogs/trigger_dialog.dart';
 
 /// DBeaver-style object editor: data preview, metadata tables and DDL for
@@ -33,9 +35,9 @@ class InspectorView extends ConsumerWidget {
   RelationKey get _key =>
       (tab.connectionId, tab.object.schema, tab.object.name);
 
-  String get _selectSql =>
+  String _selectSql(int limit) =>
       'SELECT * FROM ${qualifiedName(tab.object.schema, tab.object.name)} '
-      'LIMIT ${InspectorTab.previewRows}';
+      'LIMIT $limit';
 
   void _refresh(BuildContext context, WidgetRef ref) {
     final key = _key;
@@ -60,7 +62,10 @@ class InspectorView extends ConsumerWidget {
         .firstOrNull;
     if (config == null) return;
     final driver = await connectWithPrompt(context, ref, config);
-    if (driver != null) await tab.loadPreview(driver, _selectSql);
+    if (driver != null) {
+      // One extra row tells whether the table has more than the limit.
+      await tab.loadPreview(driver, _selectSql(tab.rowLimit + 1));
+    }
   }
 
   void _openInEditor(WidgetRef ref, String sql) {
@@ -69,23 +74,62 @@ class InspectorView extends ConsumerWidget {
         .open(tab.connectionId, initialText: sql);
   }
 
-  Future<void> _executeDdl(
+  /// Runs [statements] in one transaction. Throws if not connected, so the
+  /// calling dialog stays open and shows why nothing happened.
+  Future<void> _executeAll(
     BuildContext context,
     WidgetRef ref,
-    String sql, {
-    String? successMessage,
-  }) async {
+    List<String> statements,
+  ) async {
     final config = (ref.read(connectionsProvider).value ?? const [])
         .where((c) => c.id == tab.connectionId)
         .firstOrNull;
     final driver = config == null
         ? null
         : await connectWithPrompt(context, ref, config);
-    // Thrown so the dialog stays open and shows why nothing happened.
     if (driver == null) throw const DriverException('Not connected');
+    await driver.executeAll(statements);
+  }
 
+  /// True if there are no unsaved row edits, or the user agrees to drop them.
+  Future<bool> _confirmDiscard(BuildContext context) async {
+    final count = tab.editor?.pendingCount ?? 0;
+    if (count == 0) return true;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard unsaved changes?'),
+        content: Text(
+          '$count edited ${count == 1 ? 'row' : 'rows'} in '
+          '${tab.object.name} will be lost.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    return discard ?? false;
+  }
+
+  Future<void> _executeDdl(
+    BuildContext context,
+    WidgetRef ref,
+    String sql, {
+    String? successMessage,
+  }) async {
     // One transaction, so a multi-statement change never half-applies.
-    await driver.executeAll([for (final s in splitSql(sql)) s.text]);
+    await _executeAll(context, ref, [for (final s in splitSql(sql)) s.text]);
 
     if (context.mounted) {
       if (successMessage != null) {
@@ -177,13 +221,18 @@ class InspectorView extends ConsumerWidget {
                     'Query in SQL',
                     style: TextStyle(fontSize: 12),
                   ),
-                  onPressed: () => _openInEditor(ref, '$_selectSql;'),
+                  onPressed: () =>
+                      _openInEditor(ref, '${_selectSql(tab.rowLimit)};'),
                 ),
                 const SizedBox(width: 4),
                 IconButton(
                   tooltip: 'Refresh',
                   icon: const Icon(Icons.refresh_rounded, size: 18),
-                  onPressed: () => _refresh(context, ref),
+                  onPressed: () async {
+                    if (await _confirmDiscard(context) && context.mounted) {
+                      _refresh(context, ref);
+                    }
+                  },
                 ),
               ],
             ),
@@ -221,6 +270,18 @@ class InspectorView extends ConsumerWidget {
       _Section.data => _DataPage(
         tab: tab,
         load: () => _loadPreview(context, ref),
+        reload: () => _loadPreview(context, ref, force: true),
+        changeLimit: (limit) async {
+          if (limit == tab.rowLimit || !await _confirmDiscard(context)) {
+            return false;
+          }
+          tab.rowLimit = limit;
+          ref.read(dataRowLimitProvider.notifier).set(limit);
+          if (context.mounted) await _loadPreview(context, ref, force: true);
+          return true;
+        },
+        save: (statements) => _executeAll(context, ref, statements),
+        openInEditor: (sql) => _openInEditor(ref, sql),
       ),
       _Section.columns => _ManageableMetadataPage<ColumnInfo>(
         value: ref.watch(columnsProvider(key)),
@@ -239,12 +300,8 @@ class InspectorView extends ConsumerWidget {
           context,
           schema: object.schema,
           table: object.name,
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Column added',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Column added'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
         onEdit: (col) => showColumnDialog(
@@ -252,12 +309,8 @@ class InspectorView extends ConsumerWidget {
           schema: object.schema,
           table: object.name,
           existing: col,
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Column updated',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Column updated'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
         onDelete: (col) => showDropConfirmDialog(
@@ -274,12 +327,8 @@ class InspectorView extends ConsumerWidget {
             name: col.name,
             cascade: cascade,
           ),
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Column dropped',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Column dropped'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
       ),
@@ -413,12 +462,8 @@ class InspectorView extends ConsumerWidget {
           schema: object.schema,
           table: object.name,
           columns: ref.read(columnsProvider(key)).value ?? const [],
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Index created',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Index created'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
         onEdit: (i) => showIndexDialog(
@@ -427,12 +472,8 @@ class InspectorView extends ConsumerWidget {
           table: object.name,
           existing: i,
           columns: ref.read(columnsProvider(key)).value ?? const [],
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Index updated',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Index updated'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
         onDelete: (i) => showDropConfirmDialog(
@@ -448,12 +489,8 @@ class InspectorView extends ConsumerWidget {
             name: i.name,
             cascade: cascade,
           ),
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Index dropped',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Index dropped'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
       ),
@@ -469,12 +506,8 @@ class InspectorView extends ConsumerWidget {
           schema: object.schema,
           table: object.name,
           isView: object.kind == DbObjectKind.view,
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Trigger created',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Trigger created'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
         onEdit: (t) => showTriggerDialog(
@@ -482,12 +515,8 @@ class InspectorView extends ConsumerWidget {
           schema: object.schema,
           table: object.name,
           existing: t,
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Trigger updated',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Trigger updated'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
         onDelete: (t) => showDropConfirmDialog(
@@ -504,12 +533,8 @@ class InspectorView extends ConsumerWidget {
             name: t.name,
             cascade: cascade,
           ),
-          onExecute: (sql) => _executeDdl(
-            context,
-            ref,
-            sql,
-            successMessage: 'Trigger dropped',
-          ),
+          onExecute: (sql) =>
+              _executeDdl(context, ref, sql, successMessage: 'Trigger dropped'),
           onOpenInSql: (sql) => _openInEditor(ref, sql),
         ),
       ),
@@ -602,16 +627,153 @@ enum _Section {
 }
 
 class _DataPage extends StatefulWidget {
-  const _DataPage({required this.tab, required this.load});
+  const _DataPage({
+    required this.tab,
+    required this.load,
+    required this.reload,
+    required this.changeLimit,
+    required this.save,
+    required this.openInEditor,
+  });
 
   final InspectorTab tab;
   final Future<void> Function() load;
+
+  /// Re-queries the data, asking first if there are unsaved edits.
+  final Future<void> Function() reload;
+
+  /// Applies a new row limit and reloads; false if not applied (unchanged,
+  /// or the user kept unsaved edits).
+  final Future<bool> Function(int limit) changeLimit;
+  final Future<void> Function(List<String> statements) save;
+  final void Function(String sql) openInEditor;
 
   @override
   State<_DataPage> createState() => _DataPageState();
 }
 
 class _DataPageState extends State<_DataPage> {
+  int? _selectedRow;
+
+  Future<void> _save(DataEditController editor) async {
+    final saved = await showSaveChangesDialog(
+      context,
+      table: '${widget.tab.object.schema}.${widget.tab.object.name}',
+      changeCount: editor.pendingCount,
+      statements: editor.buildStatements(),
+      onExecute: widget.save,
+      onOpenInSql: widget.openInEditor,
+    );
+    if (saved ?? false) {
+      editor.clear();
+      await widget.reload();
+    }
+  }
+
+  Widget _toolbar(DataEditController? editor) {
+    final scheme = Theme.of(context).colorScheme;
+    const compact = VisualDensity.compact;
+    final small = ButtonStyle(
+      visualDensity: compact,
+      padding: WidgetStateProperty.all(
+        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      ),
+      textStyle: WidgetStateProperty.all(const TextStyle(fontSize: 12)),
+    );
+    final selected = _selectedRow;
+    final selectedDeleted =
+        selected != null && editor?.rowChange(selected) == RowChange.deleted;
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      color: scheme.surfaceContainerLow,
+      child: Row(
+        children: [
+          if (editor == null)
+            Expanded(
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.lock_outline_rounded,
+                    size: 14,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      widget.tab.readOnlyReason ?? 'Read-only',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else ...[
+            FilledButton.tonalIcon(
+              style: small,
+              icon: const Icon(Icons.add_rounded, size: 16),
+              label: const Text('Add row'),
+              onPressed: editor.addRow,
+            ),
+            const SizedBox(width: 6),
+            OutlinedButton.icon(
+              style: small.copyWith(
+                foregroundColor: selectedDeleted
+                    ? null
+                    : WidgetStateProperty.all(scheme.error),
+              ),
+              icon: Icon(
+                selectedDeleted
+                    ? Icons.restore_rounded
+                    : Icons.delete_outline_rounded,
+                size: 15,
+              ),
+              label: Text(selectedDeleted ? 'Restore row' : 'Delete row'),
+              onPressed: selected == null || selected >= editor.rowCount
+                  ? null
+                  : () => selectedDeleted
+                        ? editor.restoreRow(selected)
+                        : editor.deleteRow(selected),
+            ),
+            const Spacer(),
+            if (editor.hasChanges) ...[
+              Text(
+                '${editor.pendingCount} unsaved',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.amber.shade700,
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                style: small,
+                onPressed: editor.clear,
+                child: const Text('Revert'),
+              ),
+              const SizedBox(width: 4),
+              FilledButton.icon(
+                style: small,
+                icon: const Icon(Icons.save_outlined, size: 15),
+                label: const Text('Save'),
+                onPressed: () => _save(editor),
+              ),
+            ],
+          ],
+          const SizedBox(width: 12),
+          _RowLimitField(
+            limit: widget.tab.rowLimit,
+            onChanged: widget.changeLimit,
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -635,17 +797,26 @@ class _DataPageState extends State<_DataPage> {
           return _CenteredMessage(error.toString(), isError: true);
         }
         if (preview == null) return const SizedBox.shrink();
+        final editor = tab.editor;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            _toolbar(editor),
+            const Divider(height: 1),
             if (tab.busy) const LinearProgressIndicator(minHeight: 2),
             Expanded(
-              child: ResultGrid(key: ObjectKey(preview), result: preview),
+              child: ResultGrid(
+                key: ObjectKey(preview),
+                result: preview,
+                editor: editor,
+                onSelectedRowChanged: (row) =>
+                    setState(() => _selectedRow = row),
+              ),
             ),
             _Footer(
               preview.truncated
-                  ? 'First ${preview.rows.length} rows — use "Query in SQL '
-                        'editor" to filter or see more'
+                  ? 'First ${preview.rows.length} rows — more in the table; '
+                        'raise "Rows" or use "Query in SQL" to filter'
                   : '${preview.rows.length} row(s)',
               trailing: preview.rows.isEmpty
                   ? null
@@ -670,6 +841,100 @@ class _DataPageState extends State<_DataPage> {
           ],
         );
       },
+    );
+  }
+}
+
+/// "Rows [20]" box for the Data tab's row limit. Enter applies; leaving the
+/// field or entering something invalid restores the current limit.
+class _RowLimitField extends StatefulWidget {
+  const _RowLimitField({required this.limit, required this.onChanged});
+
+  final int limit;
+  final Future<bool> Function(int limit) onChanged;
+
+  @override
+  State<_RowLimitField> createState() => _RowLimitFieldState();
+}
+
+class _RowLimitFieldState extends State<_RowLimitField> {
+  late final _controller = TextEditingController(text: '${widget.limit}');
+  final _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(() {
+      if (!_focus.hasFocus) _reset();
+    });
+  }
+
+  @override
+  void didUpdateWidget(_RowLimitField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.limit != widget.limit && !_focus.hasFocus) _reset();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _reset() => _controller.text = '${widget.limit}';
+
+  Future<void> _submit(String text) async {
+    final limit = int.tryParse(text.trim());
+    if (limit == null || limit < 1 || limit > InspectorTab.maxRowLimit) {
+      _reset();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Row limit must be between 1 and ${InspectorTab.maxRowLimit}',
+          ),
+        ),
+      );
+      return;
+    }
+    if (!await widget.onChanged(limit) && mounted) _reset();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: 'Rows to load (press Enter to apply)',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Rows',
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(width: 6),
+          SizedBox(
+            width: 64,
+            height: 28,
+            child: TextField(
+              controller: _controller,
+              focusNode: _focus,
+              textAlign: TextAlign.right,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              style: monoStyle.copyWith(fontSize: 12),
+              decoration: const InputDecoration(
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 6,
+                ),
+              ),
+              onSubmitted: _submit,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -803,21 +1068,24 @@ class _ManageableMetadataPageState<T>
   }
 
   List<T> _processItems(List<T> all) {
-    var items =
-        widget.include == null ? all : all.where(widget.include!).toList();
+    var items = widget.include == null
+        ? all
+        : all.where(widget.include!).toList();
 
     if (_filter.isNotEmpty) {
       final q = _filter.toLowerCase();
       items = items.where((item) {
         final cells = widget.row(0, item);
-        return cells
-            .any((c) => (formatValue(c) ?? '').toLowerCase().contains(q));
+        return cells.any(
+          (c) => (formatValue(c) ?? '').toLowerCase().contains(q),
+        );
       }).toList();
     }
 
     if (_sortColumn != null) {
       final col = _sortColumn!;
-      items = [...items]..sort((a, b) {
+      items = [...items]
+        ..sort((a, b) {
           final rowA = widget.row(0, a);
           final rowB = widget.row(0, b);
           final valA = col < rowA.length ? rowA[col] : null;
@@ -835,19 +1103,16 @@ class _ManageableMetadataPageState<T>
     return [
       for (var col = 0; col < widget.headers.length; col++)
         (math.max(
-              widget.headers[col].length,
-              sample.fold<int>(
-                0,
-                (m, item) {
-                  final cells = widget.row(0, item);
-                  final val = col < cells.length ? cells[col] : null;
-                  return math.max(m, (formatValue(val) ?? '').length);
-                },
-              ),
-            ) *
-            7.5 +
-            28)
-        .clamp(70.0, 480.0),
+                      widget.headers[col].length,
+                      sample.fold<int>(0, (m, item) {
+                        final cells = widget.row(0, item);
+                        final val = col < cells.length ? cells[col] : null;
+                        return math.max(m, (formatValue(val) ?? '').length);
+                      }),
+                    ) *
+                    7.5 +
+                28)
+            .clamp(70.0, 480.0),
     ];
   }
 
@@ -885,8 +1150,11 @@ class _ManageableMetadataPageState<T>
             value: 'delete',
             child: Row(
               children: [
-                Icon(Icons.delete_outline_rounded,
-                    size: 16, color: scheme.error),
+                Icon(
+                  Icons.delete_outline_rounded,
+                  size: 16,
+                  color: scheme.error,
+                ),
                 const SizedBox(width: 8),
                 Text('Delete...', style: TextStyle(color: scheme.error)),
               ],
@@ -954,10 +1222,12 @@ class _ManageableMetadataPageState<T>
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (e, _) => _CenteredMessage('$e', isError: true),
       data: (all) {
-        final originalItems =
-            widget.include == null ? all : all.where(widget.include!).toList();
+        final originalItems = widget.include == null
+            ? all
+            : all.where(widget.include!).toList();
         final displayed = _processItems(all);
-        final selectedItem = (_selectedIndex != null &&
+        final selectedItem =
+            (_selectedIndex != null &&
                 _selectedIndex! >= 0 &&
                 _selectedIndex! < displayed.length)
             ? displayed[_selectedIndex!]
@@ -1001,8 +1271,10 @@ class _ManageableMetadataPageState<T>
             FilledButton.tonalIcon(
               style: FilledButton.styleFrom(
                 visualDensity: VisualDensity.compact,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
               ),
               icon: const Icon(Icons.add_rounded, size: 16),
               label: Text(
@@ -1017,8 +1289,10 @@ class _ManageableMetadataPageState<T>
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 visualDensity: VisualDensity.compact,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
               ),
               icon: const Icon(Icons.edit_outlined, size: 14),
               label: const Text('Edit', style: TextStyle(fontSize: 12)),
@@ -1033,8 +1307,10 @@ class _ManageableMetadataPageState<T>
               style: OutlinedButton.styleFrom(
                 visualDensity: VisualDensity.compact,
                 foregroundColor: scheme.error,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
               ),
               icon: const Icon(Icons.delete_outline_rounded, size: 14),
               label: const Text('Delete', style: TextStyle(fontSize: 12)),
@@ -1071,8 +1347,10 @@ class _ManageableMetadataPageState<T>
                         },
                       )
                     : null,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 0,
+                ),
                 isDense: true,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(6),
@@ -1207,7 +1485,9 @@ class _ManageableMetadataPageState<T>
         },
         rowBuilder: (index) {
           final isSelected =
-              index > 0 && _selectedIndex != null && _selectedIndex == index - 1;
+              index > 0 &&
+              _selectedIndex != null &&
+              _selectedIndex == index - 1;
           return TableSpan(
             extent: FixedTableSpanExtent(
               index == 0 ? _headerHeight : _rowHeight,
@@ -1216,8 +1496,8 @@ class _ManageableMetadataPageState<T>
               color: index == 0
                   ? scheme.surfaceContainerHigh
                   : isSelected
-                      ? scheme.primary.withValues(alpha: 0.12)
-                      : (index.isEven ? scheme.surfaceContainerLowest : null),
+                  ? scheme.primary.withValues(alpha: 0.12)
+                  : (index.isEven ? scheme.surfaceContainerLowest : null),
             ),
             foregroundDecoration: TableSpanDecoration(
               border: TableSpanBorder(trailing: border),
@@ -1285,7 +1565,9 @@ class _ManageableMetadataPageState<T>
                     '$row',
                     style: monoStyle.copyWith(
                       fontSize: 11,
-                      color: isSelected ? scheme.primary : scheme.onSurfaceVariant,
+                      color: isSelected
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
                     ),
                   ),
                 ),
@@ -1425,10 +1707,7 @@ class _ManageableMetadataPageState<T>
         child: Text(
           text,
           overflow: TextOverflow.ellipsis,
-          style: monoStyle.copyWith(
-            fontSize: 11.5,
-            color: scheme.onSurface,
-          ),
+          style: monoStyle.copyWith(fontSize: 11.5, color: scheme.onSurface),
         ),
       );
     }

@@ -70,7 +70,14 @@ class _TabStrip extends ConsumerWidget {
                     active: tab.id == state.activeId,
                     color: _connectionColor(connections, tab.connectionId),
                     onTap: () => notifier.activate(tab.id),
-                    onClose: () => notifier.close(tab.id),
+                    onClose: () async {
+                      if (tab is InspectorTab &&
+                          tab.hasUnsavedChanges &&
+                          !await _confirmCloseUnsaved(context, tab)) {
+                        return;
+                      }
+                      notifier.close(tab.id);
+                    },
                   ),
               ],
             ),
@@ -78,6 +85,34 @@ class _TabStrip extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  Future<bool> _confirmCloseUnsaved(
+    BuildContext context,
+    InspectorTab tab,
+  ) async {
+    final close = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Close ${tab.object.name}?'),
+        content: const Text('Unsaved row edits will be lost.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Discard and close'),
+          ),
+        ],
+      ),
+    );
+    return close ?? false;
   }
 
   Color? _connectionColor(List<ConnectionConfig> list, String id) {
@@ -158,12 +193,18 @@ class _TabChip extends StatelessWidget {
                         ),
                 ),
                 const SizedBox(width: 6),
-                Text(
-                  tab.title,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                    color: active ? scheme.onSurface : scheme.onSurfaceVariant,
+                // Rebuilt on tab changes: the title marks unsaved edits.
+                ListenableBuilder(
+                  listenable: tab,
+                  builder: (_, _) => Text(
+                    tab.title,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                      color: active
+                          ? scheme.onSurface
+                          : scheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 4),
@@ -266,8 +307,10 @@ class _EmptyWorkspace extends ConsumerWidget {
               ),
               const SizedBox(height: 20),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
                   color: scheme.surfaceContainerLow,
                   borderRadius: BorderRadius.circular(8),
@@ -300,7 +343,10 @@ class _EmptyWorkspace extends ConsumerWidget {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         _ShortcutItem(label: 'Run Statement', keys: 'Ctrl+↵'),
-                        _ShortcutItem(label: 'Run Script', keys: 'Ctrl+Shift+↵'),
+                        _ShortcutItem(
+                          label: 'Run Script',
+                          keys: 'Ctrl+Shift+↵',
+                        ),
                         _ShortcutItem(label: 'Copy Cell', keys: 'Ctrl+C'),
                       ],
                     ),
@@ -364,8 +410,10 @@ class _QuickActionCard extends StatelessWidget {
                   ),
                   const Spacer(),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: scheme.surfaceContainerLowest,
                       borderRadius: BorderRadius.circular(4),
@@ -393,10 +441,7 @@ class _QuickActionCard extends StatelessWidget {
               const SizedBox(height: 4),
               Text(
                 subtitle,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: scheme.onSurfaceVariant,
-                ),
+                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
               ),
             ],
           ),
@@ -561,8 +606,10 @@ class _EditorViewState extends ConsumerState<EditorView> {
                   ),
                   _HorizontalSplitter(
                     onDragUpdate: (dy) => setState(() {
-                      _editorFraction =
-                          ((editorHeight + dy) / available).clamp(0.1, 0.9);
+                      _editorFraction = ((editorHeight + dy) / available).clamp(
+                        0.1,
+                        0.9,
+                      );
                     }),
                   ),
                   Expanded(child: ResultsView(tab: tab)),
@@ -671,8 +718,10 @@ class _Toolbar extends ConsumerWidget {
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF10B981),
                 foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 visualDensity: VisualDensity.compact,
               ),
               icon: tab.running
@@ -686,8 +735,10 @@ class _Toolbar extends ConsumerWidget {
                   : const Icon(Icons.play_arrow_rounded, size: 16),
               label: Text(
                 'Run ($runKeyText)',
-                style:
-                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                ),
               ),
               onPressed: tab.running ? null : onRun,
             ),

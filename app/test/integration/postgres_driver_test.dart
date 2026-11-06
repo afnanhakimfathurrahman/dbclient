@@ -248,4 +248,51 @@ void main() {
     final name = await driver.execute('SHOW application_name');
     expect(name.rows.single.single, isNot('executeAll_rollback_test'));
   }, skip: skip);
+
+  // Row editing writes values back as typed literals and finds rows by key.
+  // Check read-only that every loaded value round-trips: the literal must
+  // equal the stored value.
+  test('edited values round-trip as typed literals', () async {
+    final schema = env['PG_TEST_SCHEMA'];
+    if (schema == null) return;
+    final tables = [
+      for (final o in await driver.listObjects(schema))
+        if (o.kind == DbObjectKind.table) o,
+    ];
+    var checked = 0;
+    for (final table in tables.take(10)) {
+      final target = qualifiedName(schema, table.name);
+      // ctid (physical row id) re-finds each sampled row without a scan.
+      final result = await driver.execute(
+        'SELECT ctid::text, * FROM $target LIMIT 3',
+        maxRows: 3,
+      );
+      for (final row in result.rows) {
+        final ctid = quoteLiteral(row[0] as String);
+        for (final (i, column) in result.columns.indexed.skip(1)) {
+          final literal = pgTypedLiteral(
+            pgEditText(row[i], column.dataType),
+            column.dataType,
+          );
+          try {
+            final same = await driver.execute(
+              'SELECT ${quoteIdent(column.name)} IS NOT DISTINCT FROM $literal '
+              'FROM $target WHERE ctid = $ctid::tid',
+            );
+            expect(
+              same.rows.single.single,
+              isTrue,
+              reason: '${table.name}.${column.name} = $literal',
+            );
+            checked++;
+          } on DriverException catch (e) {
+            // Types without an equality operator (json, point, xml) can't
+            // be compared; they also can't be primary keys.
+            if (e.code != '42883') rethrow;
+          }
+        }
+      }
+    }
+    expect(checked, greaterThan(0));
+  }, skip: skip);
 }

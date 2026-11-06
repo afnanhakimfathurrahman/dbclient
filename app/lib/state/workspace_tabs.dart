@@ -6,6 +6,8 @@ import 'package:uuid/uuid.dart';
 import '../data/repositories.dart';
 import '../drivers/driver.dart';
 import '../drivers/sql_splitter.dart';
+import 'data_editor.dart';
+import 'providers.dart';
 
 /// Outcome of one statement in a run.
 class StatementOutcome {
@@ -46,19 +48,53 @@ sealed class WorkspaceTab extends ChangeNotifier {
 /// Inspector for one table, view, materialized view or sequence. Caches the
 /// data preview so switching tabs doesn't re-query.
 class InspectorTab extends WorkspaceTab {
-  InspectorTab({required this.connectionId, required this.object});
+  InspectorTab({
+    required this.connectionId,
+    required this.object,
+    this.rowLimit = defaultRowLimit,
+  });
 
   @override
   final String connectionId;
   final DbObject object;
 
-  static const previewRows = 200;
+  static const defaultRowLimit = 20;
+  static const maxRowLimit = 10000;
+
+  /// How many rows the Data tab loads.
+  int rowLimit;
 
   @override
-  String get title => object.name;
+  String get title =>
+      (_editor?.hasChanges ?? false) ? '${object.name} •' : object.name;
 
   QueryResult? _preview;
   QueryResult? get preview => _preview;
+
+  /// Staged row edits for the preview; null when the data is read-only
+  /// (see [readOnlyReason]).
+  DataEditController? _editor;
+  DataEditController? get editor => _editor;
+
+  /// Why the preview can't be edited, shown in the Data tab.
+  String? _readOnlyReason;
+  String? get readOnlyReason => _readOnlyReason;
+
+  bool get hasUnsavedChanges => _editor?.hasChanges ?? false;
+
+  void _setEditor(DataEditController? editor) {
+    _editor?.removeListener(notifyListeners);
+    _editor?.dispose();
+    _editor = editor;
+    // Re-notify so the tab title shows the unsaved marker.
+    editor?.addListener(notifyListeners);
+  }
+
+  @override
+  void dispose() {
+    _setEditor(null);
+    super.dispose();
+  }
 
   DriverException? _previewError;
   DriverException? get previewError => _previewError;
@@ -75,13 +111,60 @@ class InspectorTab extends WorkspaceTab {
     _previewError = null;
     notifyListeners();
     try {
-      _preview = await driver.execute(sql, maxRows: previewRows);
+      // The SQL asks for one extra row, so [QueryResult.truncated] tells
+      // whether the table has more than [rowLimit].
+      final preview = await driver.execute(sql, maxRows: rowLimit);
+      _preview = preview;
+      await _prepareEditing(driver, preview);
     } on DriverException catch (e) {
       _previewError = e;
     } finally {
       _loading = false;
       notifyListeners();
     }
+  }
+
+  /// Rows are edited by primary key, so only tables with one are editable.
+  Future<void> _prepareEditing(
+    DatabaseDriver driver,
+    QueryResult preview,
+  ) async {
+    _setEditor(null);
+    if (!object.kind.isTable) {
+      _readOnlyReason = '${object.kind.label}s are read-only here';
+      return;
+    }
+    final List<ColumnInfo> columns;
+    try {
+      columns = await driver.listColumns(object.schema, object.name);
+    } on DriverException catch (e) {
+      // The data still shows; only editing is unavailable.
+      _readOnlyReason =
+          'Read-only: could not read the primary key (${e.message})';
+      return;
+    }
+    final keyNames = {
+      for (final c in columns)
+        if (c.isPrimaryKey) c.name,
+    };
+    final keyColumns = [
+      for (final (i, c) in preview.columns.indexed)
+        if (keyNames.contains(c.name)) i,
+    ];
+    if (keyNames.isEmpty || keyColumns.length != keyNames.length) {
+      _readOnlyReason = 'Read-only: the table has no primary key';
+      return;
+    }
+    _readOnlyReason = null;
+    _setEditor(
+      DataEditController(
+        schema: object.schema,
+        table: object.name,
+        columns: preview.columns,
+        baseRows: preview.rows,
+        keyColumns: keyColumns,
+      ),
+    );
   }
 
   bool shows(String connectionId, DbObject other) =>
@@ -273,7 +356,11 @@ class WorkspaceTabsNotifier extends Notifier<WorkspaceTabsState> {
         return;
       }
     }
-    final tab = InspectorTab(connectionId: connectionId, object: object);
+    final tab = InspectorTab(
+      connectionId: connectionId,
+      object: object,
+      rowLimit: ref.read(dataRowLimitProvider),
+    );
     state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
   }
 

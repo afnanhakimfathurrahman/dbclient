@@ -128,8 +128,7 @@ class ResultExporter {
   }
 
   static String toTsv(QueryResult result) {
-    String cell(String text) =>
-        text.replaceAll(RegExp(r'[\t\r\n]+'), ' ');
+    String cell(String text) => text.replaceAll(RegExp(r'[\t\r\n]+'), ' ');
     return [
       result.columns.map((c) => cell(c.name)).join('\t'),
       for (final row in result.rows)
@@ -153,19 +152,9 @@ class ResultExporter {
     double() => value.isFinite ? '$value' : quoteLiteral('$value'),
     // Postgres arrays decode to lists; JSON arrays are lists too, so only
     // array-typed columns get the '{…}' array literal.
-    List() when dataType.endsWith('[]') => quoteLiteral(_pgArray(value)),
+    List() when dataType.endsWith('[]') => quoteLiteral(pgArrayLiteral(value)),
     _ => quoteLiteral(_text(value)!),
   };
-
-  static String _pgArray(List<Object?> values) {
-    final items = values.map((v) {
-      if (v == null) return 'NULL';
-      if (v is List) return _pgArray(v);
-      final text = _text(v)!;
-      return '"${text.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
-    });
-    return '{${items.join(',')}}';
-  }
 
   /// Full, untruncated text of a value; null for SQL NULL.
   static String? _text(Object? value) =>
