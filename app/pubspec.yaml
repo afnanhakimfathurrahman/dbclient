@@ -78,6 +78,10 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # The Linux window icon (other platforms take theirs from the runner).
+  assets:
+    - assets/icon/app_icon.png
+
   fonts:
     - family: JetBrains Mono
       fonts:
