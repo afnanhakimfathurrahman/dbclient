@@ -65,7 +65,7 @@ void main() {
 
   test('errors are readable', () {
     expect(
-      () => parseConnectionUri('mysql://x@y/z'),
+      () => parseConnectionUri('oracle://x@y/z'),
       throwsA(
         isA<FormatException>().having(
           (e) => e.message,

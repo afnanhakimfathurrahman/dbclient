@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'driver.dart';
-import 'postgres/postgres_sql.dart';
+import 'postgres/postgres_sql.dart' show pgArrayLiteral;
+import 'sql_dialect.dart';
 import 'value_format.dart';
 
 enum ExportFormat {
@@ -38,18 +39,20 @@ enum ExportFormat {
 /// truncated (bytea is written in full).
 class ResultExporter {
   /// [tableName] is the INSERT target for [ExportFormat.sql], written as-is,
-  /// so pass it already quoted (see [qualifiedName]).
+  /// so pass it already quoted (see [SqlDialect.qualifiedName]). [dialect]
+  /// decides how SQL INSERTs quote names and values.
   static String export(
     QueryResult result,
     ExportFormat format, {
     String tableName = 'records',
+    SqlDialect dialect = postgresDialect,
   }) {
     return switch (format) {
       ExportFormat.csv => toCsv(result),
       ExportFormat.json => toJson(result),
       ExportFormat.markdown => toMarkdown(result),
       ExportFormat.tsv => toTsv(result),
-      ExportFormat.sql => toSql(result, tableName: tableName),
+      ExportFormat.sql => toSql(result, tableName: tableName, dialect: dialect),
     };
   }
 
@@ -136,24 +139,36 @@ class ResultExporter {
     ].join('\n');
   }
 
-  static String toSql(QueryResult result, {String tableName = 'records'}) {
-    final columns = result.columns.map((c) => quoteIdent(c.name)).join(', ');
+  static String toSql(
+    QueryResult result, {
+    String tableName = 'records',
+    SqlDialect dialect = postgresDialect,
+  }) {
+    final columns = result.columns
+        .map((c) => dialect.quoteIdent(c.name))
+        .join(', ');
     return [
       for (final row in result.rows)
         'INSERT INTO $tableName ($columns) VALUES '
-            '(${[for (final (i, v) in row.indexed) _sqlLiteral(v, result.columns[i].dataType)].join(', ')});',
+            '(${[for (final (i, v) in row.indexed) _sqlLiteral(v, result.columns[i].dataType, dialect)].join(', ')});',
     ].join('\n');
   }
 
-  static String _sqlLiteral(Object? value, String dataType) => switch (value) {
+  static String _sqlLiteral(
+    Object? value,
+    String dataType,
+    SqlDialect dialect,
+  ) => switch (value) {
     null => 'NULL',
     bool() => value ? 'TRUE' : 'FALSE',
     int() => '$value',
-    double() => value.isFinite ? '$value' : quoteLiteral('$value'),
+    double() => value.isFinite ? '$value' : dialect.quoteLiteral('$value'),
     // Postgres arrays decode to lists; JSON arrays are lists too, so only
     // array-typed columns get the '{…}' array literal.
-    List() when dataType.endsWith('[]') => quoteLiteral(pgArrayLiteral(value)),
-    _ => quoteLiteral(_text(value)!),
+    List() when dataType.endsWith('[]') => dialect.quoteLiteral(
+      pgArrayLiteral(value),
+    ),
+    _ => dialect.quoteLiteral(_text(value)!),
   };
 
   /// Full, untruncated text of a value; null for SQL NULL.

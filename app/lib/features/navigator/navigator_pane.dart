@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme.dart';
 import '../../drivers/document.dart';
 import '../../drivers/driver.dart';
-import '../../drivers/postgres/postgres_sql.dart';
+import '../../drivers/sql_dialect.dart';
 import '../../state/workspace_tabs.dart';
 import '../../state/providers.dart';
 import '../connections/connection_dialog.dart';
@@ -549,8 +549,8 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
                 onDoubleTap: () => _openEditor(
                   config,
                   initialText:
-                      'ALTER TABLE ${_qualified(object)}\n'
-                      '  ADD CONSTRAINT ${quoteIdent(c.name)} ${c.definition};',
+                      'ALTER TABLE ${_qualified(config, object)}\n'
+                      '  ADD CONSTRAINT ${_dialect(config).quoteIdent(c.name)} ${c.definition};',
                 ),
               ),
         ],
@@ -685,8 +685,11 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
     );
   }
 
-  String _qualified(DbObject object) =>
-      qualifiedName(object.schema, object.name);
+  SqlDialect _dialect(ConnectionConfig config) =>
+      ref.read(sqlDriverProvider(config.id))?.dialect ?? postgresDialect;
+
+  String _qualified(ConnectionConfig config, DbObject object) =>
+      _dialect(config).qualifiedName(object.schema, object.name);
 
   void _openInspector(ConnectionConfig config, DbObject object) {
     ref.read(workspaceTabsProvider.notifier).openInspector(config.id, object);
@@ -719,10 +722,12 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
       case 'query':
         await _openEditor(
           config,
-          initialText: 'SELECT * FROM ${_qualified(object)} LIMIT 100;',
+          initialText: 'SELECT * FROM ${_qualified(config, object)} LIMIT 100;',
         );
       case 'copy':
-        await Clipboard.setData(ClipboardData(text: _qualified(object)));
+        await Clipboard.setData(
+          ClipboardData(text: _qualified(config, object)),
+        );
     }
   }
 

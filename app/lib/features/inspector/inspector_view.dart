@@ -9,6 +9,7 @@ import 'package:two_dimensional_scrollables/two_dimensional_scrollables.dart';
 import '../../app/theme.dart';
 import '../../drivers/driver.dart';
 import '../../drivers/postgres/postgres_sql.dart';
+import '../../drivers/sql_dialect.dart';
 import '../../drivers/sql_splitter.dart';
 import '../../drivers/value_format.dart';
 import '../../state/data_editor.dart';
@@ -35,9 +36,12 @@ class InspectorView extends ConsumerWidget {
   RelationKey get _key =>
       (tab.connectionId, tab.object.schema, tab.object.name);
 
-  String _selectSql(int limit) =>
-      'SELECT * FROM ${qualifiedName(tab.object.schema, tab.object.name)} '
+  String _selectSql(SqlDialect dialect, int limit) =>
+      'SELECT * FROM ${dialect.qualifiedName(tab.object.schema, tab.object.name)} '
       'LIMIT $limit';
+
+  SqlDialect _dialect(WidgetRef ref) =>
+      ref.read(sqlDriverProvider(tab.connectionId))?.dialect ?? postgresDialect;
 
   void _refresh(BuildContext context, WidgetRef ref) {
     final key = _key;
@@ -64,7 +68,10 @@ class InspectorView extends ConsumerWidget {
     final driver = await connectSqlWithPrompt(context, ref, config);
     if (driver != null) {
       // One extra row tells whether the table has more than the limit.
-      await tab.loadPreview(driver, _selectSql(tab.rowLimit + 1));
+      await tab.loadPreview(
+        driver,
+        _selectSql(driver.dialect, tab.rowLimit + 1),
+      );
     }
   }
 
@@ -225,8 +232,10 @@ class InspectorView extends ConsumerWidget {
                     'Query in SQL',
                     style: TextStyle(fontSize: 12),
                   ),
-                  onPressed: () =>
-                      _openInEditor(ref, '${_selectSql(tab.rowLimit)};'),
+                  onPressed: () => _openInEditor(
+                    ref,
+                    '${_selectSql(_dialect(ref), tab.rowLimit)};',
+                  ),
                 ),
                 const SizedBox(width: 4),
                 IconButton(
@@ -290,6 +299,7 @@ class InspectorView extends ConsumerWidget {
         },
         save: (statements) => _executeAll(context, ref, statements),
         openInEditor: (sql) => _openInEditor(ref, sql),
+        dialect: _dialect(ref),
       ),
       _Section.columns => _ManageableMetadataPage<ColumnInfo>(
         value: ref.watch(columnsProvider(key)),
@@ -648,6 +658,7 @@ class _DataPage extends StatefulWidget {
     required this.changeLimit,
     required this.save,
     required this.openInEditor,
+    required this.dialect,
   });
 
   final InspectorTab tab;
@@ -661,6 +672,7 @@ class _DataPage extends StatefulWidget {
   final Future<bool> Function(int limit) changeLimit;
   final Future<void> Function(List<String> statements) save;
   final void Function(String sql) openInEditor;
+  final SqlDialect dialect;
 
   @override
   State<_DataPage> createState() => _DataPageState();
@@ -844,7 +856,8 @@ class _DataPageState extends State<_DataPage> {
                       onPressed: () => showExportDialog(
                         context,
                         result: preview,
-                        defaultTableName: qualifiedName(
+                        connectionId: tab.connectionId,
+                        defaultTableName: widget.dialect.qualifiedName(
                           tab.object.schema,
                           tab.object.name,
                         ),

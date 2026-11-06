@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:postgres/postgres.dart' as pg;
 
 import '../driver.dart';
+import '../sql_dialect.dart';
 import 'postgres_sql.dart';
 
 /// PostgreSQL driver built on `package:postgres`.
@@ -20,6 +21,9 @@ class PostgresDriver implements SqlDriver {
 
   @override
   Set<SqlFeature> get features => SqlFeature.values.toSet();
+
+  @override
+  SqlDialect get dialect => postgresDialect;
 
   pg.Connection? _query;
   pg.Connection? _meta;

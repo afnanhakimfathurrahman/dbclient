@@ -155,6 +155,10 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
     if (_username.text == old.defaultUsername) {
       _username.text = engine.defaultUsername;
     }
+    // MySQL 8's default login needs TLS with this driver.
+    if (engine == DatabaseEngine.mysql && _tlsMode == TlsMode.disable) {
+      _tlsMode = TlsMode.require;
+    }
   }
 
   void _setTlsMode(TlsMode mode) {
@@ -176,7 +180,11 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
     final database = _database.text.trim();
     return ConnectionConfig(
       id: widget.existing?.id ?? const Uuid().v4(),
-      name: _name.text.trim().isEmpty ? '$host/$database' : _name.text.trim(),
+      name: _name.text.trim().isNotEmpty
+          ? _name.text.trim()
+          : database.isEmpty
+          ? host
+          : '$host/$database',
       engine: _engine,
       host: host,
       port: int.tryParse(_port.text.trim()) ?? _engine.defaultPort,
@@ -563,9 +571,12 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                     decoration: InputDecoration(
                                       labelText: _engine == DatabaseEngine.redis
                                           ? 'Database index *'
+                                          : _engine.databaseOptional
+                                          ? 'Database'
                                           : 'Database Name *',
-                                      hintText:
-                                          'e.g. ${_engine.defaultDatabase}',
+                                      hintText: _engine.databaseOptional
+                                          ? 'Optional'
+                                          : 'e.g. ${_engine.defaultDatabase}',
                                       isDense: true,
                                       border: const OutlineInputBorder(),
                                     ),
@@ -577,6 +588,8 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                         ? (v) => int.tryParse(v ?? '') == null
                                               ? 'A number, e.g. 0'
                                               : null
+                                        : _engine.databaseOptional
+                                        ? null
                                         : _required,
                                   ),
                                 ),
@@ -834,6 +847,19 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                               ],
                               onChanged: (v) => _setTlsMode(v!),
                             ),
+                            if (_engine == DatabaseEngine.mysql &&
+                                _tlsMode != TlsMode.disable) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                'MySQL connections are encrypted, but the '
+                                'server certificate is not verified (a '
+                                'limit of the MySQL driver).',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: Colors.amber.shade700,
+                                ),
+                              ),
+                            ],
                             const SizedBox(height: 12),
 
                             // Explanatory card based on chosen TLS mode
@@ -1266,8 +1292,8 @@ class _EnginePicker extends StatelessWidget {
         const SizedBox(height: 8),
         LayoutBuilder(
           builder: (context, constraints) {
-            // Two columns on narrow dialogs, four on wide ones.
-            final columns = constraints.maxWidth < 440 ? 2 : 4;
+            // Two columns on narrow dialogs, three on wide ones.
+            final columns = constraints.maxWidth < 440 ? 2 : 3;
             const gap = 8.0;
             final width =
                 (constraints.maxWidth - gap * (columns - 1)) / columns;

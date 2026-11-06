@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../drivers/driver.dart';
-import '../drivers/postgres/postgres_sql.dart';
+import '../drivers/sql_dialect.dart';
 import '../drivers/value_format.dart';
 
 /// How a row differs from what was loaded.
@@ -30,6 +30,7 @@ class DataEditController extends ChangeNotifier {
     required this.columns,
     required this.baseRows,
     required this.keyColumns,
+    this.dialect = postgresDialect,
   }) : assert(keyColumns.isNotEmpty);
 
   final String schema;
@@ -39,6 +40,8 @@ class DataEditController extends ChangeNotifier {
 
   /// Indexes into [columns] of the primary key.
   final List<int> keyColumns;
+
+  final SqlDialect dialect;
 
   final _updates = <int, Map<int, CellValue>>{};
   final _deleted = <int>{};
@@ -73,7 +76,7 @@ class DataEditController extends ChangeNotifier {
   String? editTextAt(int row, int column) {
     if (stagedAt(row, column) case final staged?) return staged.text;
     if (isInserted(row)) return null;
-    return pgEditText(baseRows[row][column], columns[column].dataType);
+    return dialect.editText(baseRows[row][column], columns[column].dataType);
   }
 
   void setCell(int row, int column, CellValue value) {
@@ -81,7 +84,7 @@ class DataEditController extends ChangeNotifier {
       _inserted[row - baseRows.length][column] = value;
     } else {
       if (_deleted.contains(row)) return;
-      final original = pgEditText(
+      final original = dialect.editText(
         baseRows[row][column],
         columns[column].dataType,
       );
@@ -139,17 +142,17 @@ class DataEditController extends ChangeNotifier {
   /// transaction: deletes first (so a deleted key can be re-inserted), then
   /// updates, then inserts.
   List<String> buildStatements() {
-    final target = qualifiedName(schema, table);
-    String column(int c) => quoteIdent(columns[c].name);
+    final target = dialect.qualifiedName(schema, table);
+    String column(int c) => dialect.quoteIdent(columns[c].name);
     String value(int c, CellValue v) =>
-        pgTypedLiteral(v.text, columns[c].dataType);
+        dialect.typedLiteral(v.text, columns[c].dataType);
     String where(int row) => keyColumns
         .map((c) {
           final key = baseRows[row][c];
           return key == null
               ? '${column(c)} IS NULL'
               : '${column(c)} = '
-                    '${pgTypedLiteral(pgEditText(key, columns[c].dataType), columns[c].dataType)}';
+                    '${dialect.typedLiteral(dialect.editText(key, columns[c].dataType), columns[c].dataType)}';
         })
         .join(' AND ');
 
