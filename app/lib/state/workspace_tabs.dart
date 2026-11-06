@@ -16,11 +16,36 @@ import 'providers.dart';
 
 /// Outcome of one statement in a run.
 class StatementOutcome {
-  const StatementOutcome(this.sql, {this.result, this.error});
+  const StatementOutcome(
+    this.sql, {
+    this.result,
+    this.error,
+    this.rowsReleased = false,
+  });
 
   final String sql;
   final QueryResult? result;
   final DriverException? error;
+
+  /// The rows were dropped to save memory (only the newest result sets of a
+  /// script keep theirs); [result] keeps the columns and counts.
+  final bool rowsReleased;
+
+  /// A copy without its rows.
+  StatementOutcome released() {
+    final r = result!;
+    return StatementOutcome(
+      sql,
+      result: QueryResult(
+        columns: r.columns,
+        rows: const [],
+        affectedRows: r.affectedRows,
+        elapsed: r.elapsed,
+        truncated: r.truncated,
+      ),
+      rowsReleased: true,
+    );
+  }
 }
 
 /// A tab in the workspace: a SQL editor or an object inspector.
@@ -116,9 +141,19 @@ class InspectorTab extends WorkspaceTab {
     _previewError = null;
     notifyListeners();
     try {
-      // The SQL asks for one extra row, so [QueryResult.truncated] tells
-      // whether the table has more than [rowLimit].
-      final preview = await driver.execute(sql, maxRows: rowLimit);
+      // The SQL asks for one extra row to tell whether the table has more
+      // than [rowLimit]. Fetching it whole and dropping it here, instead of
+      // letting the row cap trip, saves the driver a server-side cancel.
+      var preview = await driver.execute(sql, maxRows: rowLimit + 1);
+      if (preview.rows.length > rowLimit) {
+        preview = QueryResult(
+          columns: preview.columns,
+          rows: preview.rows.sublist(0, rowLimit),
+          affectedRows: preview.affectedRows,
+          elapsed: preview.elapsed,
+          truncated: true,
+        );
+      }
       _preview = preview;
       await _prepareEditing(driver, preview);
     } on DriverException catch (e) {
@@ -232,6 +267,13 @@ class CollectionTab extends WorkspaceTab {
 
   bool get loaded => _page != null || _error != null;
 
+  /// Filter text [_total] was counted for.
+  String? _countedFilter;
+
+  /// Makes the next [run] count again, after documents were added or
+  /// removed.
+  void recount() => _countedFilter = null;
+
   /// Runs the current query. [resetSkip] starts again from the first page.
   Future<void> run(DocumentDriver driver, {bool resetSkip = false}) async {
     if (_loading) return;
@@ -252,7 +294,12 @@ class CollectionTab extends WorkspaceTab {
           limit: limit,
         );
         _page = page;
-        _total = await driver.count(database, collection, filterDoc);
+        // Counting can scan the collection, so paging through the same
+        // filter reuses the last count.
+        if (resetSkip || _total == null || _countedFilter != filter.text) {
+          _total = await driver.count(database, collection, filterDoc);
+          _countedFilter = filter.text;
+        }
       } else {
         final stages = parseMongo(pipeline.text);
         if (stages is! List || stages.any((s) => s is! Map<String, dynamic>)) {
@@ -403,7 +450,7 @@ class RedisTab extends WorkspaceTab {
     try {
       args = splitRedisCommand(line);
     } on FormatException catch (e) {
-      consoleLog.add((line, RespError('ERR ${e.message}')));
+      _log(line, RespError('ERR ${e.message}'));
       notifyListeners();
       return;
     }
@@ -421,8 +468,21 @@ class RedisTab extends WorkspaceTab {
       _consoleRunning = false;
       _consoleDriver = null;
     }
-    consoleLog.add((line, reply));
+    _log(line, reply);
     notifyListeners();
+  }
+
+  /// Console entries kept; older ones scroll away.
+  static const consoleLogLimit = 200;
+
+  void _log(String line, Object? reply) {
+    consoleLog.add((line, reply));
+    if (consoleLog.length > consoleLogLimit) {
+      consoleLog.removeRange(0, consoleLog.length - consoleLogLimit);
+    }
+    if (history.length > consoleLogLimit) {
+      history.removeRange(0, history.length - consoleLogLimit);
+    }
   }
 
   @override
@@ -511,6 +571,7 @@ class EditorTab extends WorkspaceTab {
         try {
           final result = await driver.execute(sql);
           outcomes.add(StatementOutcome(sql, result: result));
+          releaseOldRows(outcomes);
           await history.add(
             connectionId: connectionId,
             sql: sql,
@@ -548,6 +609,19 @@ class EditorTab extends WorkspaceTab {
       _running = false;
       _runningOn = null;
       notifyListeners();
+    }
+  }
+
+  /// Result sets of a script that keep their rows; older ones drop them.
+  static const keptResultSets = 3;
+
+  @visibleForTesting
+  static void releaseOldRows(List<StatementOutcome> outcomes) {
+    var kept = 0;
+    for (var i = outcomes.length - 1; i >= 0; i--) {
+      final o = outcomes[i];
+      if (o.rowsReleased || !(o.result?.hasResultSet ?? false)) continue;
+      if (++kept > keptResultSets) outcomes[i] = o.released();
     }
   }
 

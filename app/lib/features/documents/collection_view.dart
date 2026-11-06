@@ -79,6 +79,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
     final driver = await _driver();
     if (driver == null) throw const DriverException('Not connected');
     await action(driver);
+    tab.recount();
     await tab.run(driver);
   }
 
@@ -470,17 +471,22 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
       ),
       _DocView.table => ResultGrid(
         key: ObjectKey(page),
-        result: _asTable(page),
+        result: _tables[page] ??= _asTable(page),
       ),
       _DocView.json => SingleChildScrollView(
         padding: const EdgeInsets.all(14),
         child: SelectableText(
-          formatMongo(page.documents),
+          _json[page] ??= formatMongo(page.documents),
           style: monoStyle.copyWith(fontSize: 12.5, height: 1.4),
         ),
       ),
     };
   }
+
+  /// Table and JSON views per page, built once rather than per rebuild
+  /// (pages are replaced, never changed in place).
+  static final _tables = Expando<QueryResult>();
+  static final _json = Expando<String>();
 
   /// Top-level fields as columns (in order of first appearance), nested
   /// values as one-line mongosh text.

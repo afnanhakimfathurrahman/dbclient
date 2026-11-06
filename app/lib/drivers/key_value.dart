@@ -40,6 +40,7 @@ class KeyData {
     this.pairs = const [],
     this.items = const [],
     this.entries = const [],
+    this.textTruncated = false,
   });
 
   final String key;
@@ -61,6 +62,10 @@ class KeyData {
 
   /// stream entries: (id, [field, value, …]).
   final List<(String, List<String>)> entries;
+
+  /// [text] holds only the start of a large string, or (null) a JSON
+  /// document too large to fetch.
+  final bool textTruncated;
 
   int get shown => switch (type) {
     'hash' || 'zset' => pairs.length,

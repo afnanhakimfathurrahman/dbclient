@@ -151,6 +151,14 @@ SqlCompletion? completeSql({
 
   final refs = parseTableRefs(stmt);
   final suggestions = <SqlSuggestion>[];
+  // Checked before a suggestion is built: a schema can have thousands of
+  // tables, and this runs on every keystroke.
+  final needle = input.toLowerCase();
+  bool wants(String label) {
+    final l = label.toLowerCase();
+    return l.startsWith(needle) && l != needle;
+  }
+
   String quote(String name) => _completionName(name, dialect);
 
   void addColumns(TableRef ref, {bool withTable = false}) {
@@ -158,6 +166,7 @@ SqlCompletion? completeSql({
     if (schema == null) return;
     for (final column
         in catalog.columns(schema, ref.name) ?? const <ColumnInfo>[]) {
+      if (!wants(column.name)) continue;
       suggestions.add(
         SqlSuggestion(
           label: column.name,
@@ -174,7 +183,13 @@ SqlCompletion? completeSql({
   void addTables(String? schema) {
     final target = schema ?? catalog.defaultSchema;
     if (target == null) return;
+    // Only [limit] suggestions are shown, and tables rank together, so the
+    // first [limit] matches are all that can make it.
+    var added = 0;
     for (final object in catalog.objects(target) ?? const <DbObject>[]) {
+      if (added == limit) break;
+      if (!wants(object.name)) continue;
+      added++;
       suggestions.add(
         SqlSuggestion(
           label: object.name,
@@ -194,6 +209,7 @@ SqlCompletion? completeSql({
 
   void addSchemas() {
     for (final schema in catalog.schemas() ?? const <String>[]) {
+      if (!wants(schema)) continue;
       suggestions.add(
         SqlSuggestion(
           label: schema,
@@ -213,6 +229,7 @@ SqlCompletion? completeSql({
       ..._keywords,
       ...?_dialectKeywords[dialect.runtimeType],
     ]) {
+      if (!wants(keyword)) continue;
       suggestions.add(
         SqlSuggestion(
           label: keyword,
@@ -222,6 +239,7 @@ SqlCompletion? completeSql({
       );
     }
     for (final function in _functions) {
+      if (!wants(function)) continue;
       suggestions.add(
         SqlSuggestion(
           label: function,
@@ -275,12 +293,9 @@ SqlCompletion? completeSql({
     addTables(null);
   }
 
-  final needle = input.toLowerCase();
   final matched = <SqlSuggestion>[];
   final seen = <String>{};
   for (final s in suggestions) {
-    final label = s.label.toLowerCase();
-    if (!label.startsWith(needle) || label == needle) continue;
     if (seen.add('${s.kind.name}:${s.label}')) matched.add(s);
   }
   // Columns and tables before keywords, then shorter (closer) names first;
@@ -443,9 +458,11 @@ String _stripStringsAndComments(String text) {
   return out.toString();
 }
 
+final _plainName = RegExp(r'^[A-Za-z_][A-Za-z0-9_$]*$');
+
 /// How a name is inserted: bare when the engine allows it, else quoted.
 String _completionName(String name, SqlDialect dialect) {
-  final plain = RegExp(r'^[A-Za-z_][A-Za-z0-9_$]*$').hasMatch(name);
+  final plain = _plainName.hasMatch(name);
   return switch (dialect) {
     // MySQL names are case-insensitive for columns; quote only when needed.
     MySqlDialect() when plain && !_mysqlReserved.contains(name.toUpperCase()) =>

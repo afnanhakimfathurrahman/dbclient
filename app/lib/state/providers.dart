@@ -53,32 +53,62 @@ class SessionsNotifier extends Notifier<Map<String, Session>> {
     return const {};
   }
 
-  Future<DatabaseDriver> connect(
+  /// Connects in flight, so concurrent calls (a double-click, or opening an
+  /// editor while the tree connects) share one driver instead of leaking one.
+  final _pending = <String, Future<DatabaseDriver>>{};
+
+  Future<DatabaseDriver> connect(ConnectionConfig config, String? password) {
+    final existing = state[config.id];
+    if (existing?.status == SessionStatus.connected) {
+      return Future.value(existing!.driver!);
+    }
+    if (_pending[config.id] case final pending?) return pending;
+    final future = _connect(config, password);
+    _pending[config.id] = future;
+    future.whenComplete(() {
+      if (identical(_pending[config.id], future)) _pending.remove(config.id);
+    }).ignore();
+    return future;
+  }
+
+  Future<DatabaseDriver> _connect(
     ConnectionConfig config,
     String? password,
   ) async {
-    final existing = state[config.id];
-    if (existing?.status == SessionStatus.connected) return existing!.driver!;
-
-    state = {...state, config.id: const Session(SessionStatus.connecting)};
+    // A fresh instance, so a disconnect (or a newer connect) while this one
+    // is in flight can be told apart from it.
+    // ignore: prefer_const_constructors
+    final connecting = Session(SessionStatus.connecting);
+    state = {...state, config.id: connecting};
     final driver = createDriver(config);
     try {
       await driver.connect(password);
-      state = {
-        ...state,
-        config.id: Session(SessionStatus.connected, driver: driver),
-      };
-      return driver;
     } catch (e) {
       await driver.close();
-      state = {...state, config.id: Session(SessionStatus.failed, error: '$e')};
+      if (identical(state[config.id], connecting)) {
+        state = {
+          ...state,
+          config.id: Session(SessionStatus.failed, error: '$e'),
+        };
+      }
       rethrow;
     }
+    if (!identical(state[config.id], connecting)) {
+      // Disconnected meanwhile: don't bring the session back.
+      await driver.close();
+      throw StateError('Disconnected while connecting');
+    }
+    state = {
+      ...state,
+      config.id: Session(SessionStatus.connected, driver: driver),
+    };
+    return driver;
   }
 
   Future<void> disconnect(String connectionId) async {
     final session = state[connectionId];
     state = {...state}..remove(connectionId);
+    _pending.remove(connectionId);
     await session?.driver?.close();
   }
 
@@ -104,10 +134,30 @@ final sqlDriverProvider = Provider.family<SqlDriver?, String>((ref, id) {
   return driver is SqlDriver ? driver : null;
 });
 
+/// Bumped per connection by a refresh. Metadata providers watch their own
+/// connection's entry, so refreshing one connection reloads only its
+/// metadata.
+class MetadataEpochNotifier extends Notifier<Map<String, int>> {
+  @override
+  Map<String, int> build() => const {};
+
+  void bump(String connectionId) =>
+      state = {...state, connectionId: (state[connectionId] ?? 0) + 1};
+}
+
+final metadataEpochProvider =
+    NotifierProvider<MetadataEpochNotifier, Map<String, int>>(
+      MetadataEpochNotifier.new,
+    );
+
+void _watchEpoch(Ref ref, String connectionId) =>
+    ref.watch(metadataEpochProvider.select((e) => e[connectionId]));
+
 final schemasProvider = FutureProvider.family<List<String>, String>((
   ref,
   connectionId,
 ) async {
+  _watchEpoch(ref, connectionId);
   final driver = ref.watch(sqlDriverProvider(connectionId));
   if (driver == null) return const [];
   return driver.listSchemas();
@@ -116,6 +166,7 @@ final schemasProvider = FutureProvider.family<List<String>, String>((
 final objectsProvider =
     FutureProvider.family<List<DbObject>, (String connectionId, String schema)>(
       (ref, key) async {
+        _watchEpoch(ref, key.$1);
         final driver = ref.watch(sqlDriverProvider(key.$1));
         if (driver == null) return const [];
         return driver.listObjects(key.$2);
@@ -131,6 +182,7 @@ FutureProviderFamily<List<T>, RelationKey> _objectMetadata<T>(
   Future<List<T>> Function(SqlDriver driver, String schema, String object) load,
 ) {
   return FutureProvider.family<List<T>, RelationKey>((ref, key) async {
+    _watchEpoch(ref, key.$1);
     final driver = ref.watch(sqlDriverProvider(key.$1));
     if (driver == null) return const [];
     return load(driver, key.$2, key.$3);
@@ -150,31 +202,22 @@ final routinesProvider =
       List<RoutineInfo>,
       (String connectionId, String schema)
     >((ref, key) async {
+      _watchEpoch(ref, key.$1);
       final driver = ref.watch(sqlDriverProvider(key.$1));
       if (driver == null) return const [];
       return driver.listRoutines(key.$2);
     });
 
-/// Drops all cached metadata for a refresh.
-void invalidateMetadata(WidgetRef ref, String connectionId) {
-  ref.invalidate(documentDatabasesProvider(connectionId));
-  ref.invalidate(collectionsProvider);
-  ref.invalidate(redisDatabasesProvider(connectionId));
-  ref.invalidate(schemasProvider(connectionId));
-  ref.invalidate(objectsProvider);
-  ref.invalidate(columnsProvider);
-  ref.invalidate(indexesProvider);
-  ref.invalidate(constraintsProvider);
-  ref.invalidate(triggersProvider);
-  ref.invalidate(partitionsProvider);
-  ref.invalidate(routinesProvider);
-  ref.invalidate(ddlProvider);
-}
+/// Drops a connection's cached metadata for a refresh; other connections
+/// keep theirs.
+void invalidateMetadata(WidgetRef ref, String connectionId) =>
+    ref.read(metadataEpochProvider.notifier).bump(connectionId);
 
 final ddlProvider = FutureProvider.family<String, RelationKey>((
   ref,
   key,
 ) async {
+  _watchEpoch(ref, key.$1);
   final driver = ref.watch(sqlDriverProvider(key.$1));
   if (driver == null) return '';
   return driver.ddl(key.$2, key.$3);
@@ -236,6 +279,7 @@ final documentDatabasesProvider = FutureProvider.family<List<String>, String>((
   ref,
   connectionId,
 ) async {
+  _watchEpoch(ref, connectionId);
   final driver = ref.watch(documentDriverProvider(connectionId));
   if (driver == null) return const [];
   return driver.listDatabases();
@@ -246,6 +290,7 @@ final collectionsProvider =
       List<CollectionInfo>,
       (String connectionId, String database)
     >((ref, key) async {
+      _watchEpoch(ref, key.$1);
       final driver = ref.watch(documentDriverProvider(key.$1));
       if (driver == null) return const [];
       return driver.listCollections(key.$2);
@@ -267,6 +312,7 @@ final redisDatabasesProvider =
       ref,
       connectionId,
     ) async {
+      _watchEpoch(ref, connectionId);
       final driver = ref.watch(keyValueDriverProvider(connectionId));
       if (driver == null) return const [];
       final count = await driver.databaseCount();

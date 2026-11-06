@@ -8,8 +8,10 @@ import '../driver.dart';
 
 /// MongoDB via mongo_dart (server 3.6+).
 ///
-/// A mongo_dart `Db` is bound to one database, so one is opened per
-/// database on first use; all authenticate against the same auth database.
+/// A mongo_dart `Db` is bound to one database (its connection manager can't
+/// be shared, and switching `databaseName` would race concurrent
+/// operations), so one is opened per database on first use; all
+/// authenticate against the same auth database. Only a few are kept open.
 class MongoDriver implements DocumentDriver {
   MongoDriver(this.config);
 
@@ -18,8 +20,20 @@ class MongoDriver implements DocumentDriver {
 
   static const _openTimeout = Duration(seconds: 20);
 
+  /// Open database connections kept; idle ones beyond this are closed,
+  /// least recently used first.
+  static const _maxOpen = 3;
+
   String? _password;
+
+  /// Open connections, least recently used first.
   final _dbs = <String, Future<mongo.Db>>{};
+
+  /// Operations running per database.
+  final _busy = <String, int>{};
+
+  /// Database used for connect, ping and listing databases; kept open.
+  String get _home => config.database.isEmpty ? 'admin' : config.database;
 
   bool get _srv => config.options['srv'] == 'true';
 
@@ -71,7 +85,7 @@ class MongoDriver implements DocumentDriver {
   Future<void> connect(String? password) async {
     _password = password;
     await _guard(() async {
-      final db = await _db(config.database.isEmpty ? 'admin' : config.database);
+      final db = await _db(_home);
       await db.runCommand({'ping': 1});
     });
   }
@@ -92,7 +106,7 @@ class MongoDriver implements DocumentDriver {
   @override
   Future<Duration> ping() => _guard(() async {
     final watch = Stopwatch()..start();
-    final db = await _db(config.database.isEmpty ? 'admin' : config.database);
+    final db = await _db(_home);
     await db.runCommand({'ping': 1});
     return watch.elapsed;
   });
@@ -103,7 +117,7 @@ class MongoDriver implements DocumentDriver {
 
   @override
   Future<List<String>> listDatabases() => _guard(() async {
-    final db = await _db(config.database.isEmpty ? 'admin' : config.database);
+    final db = await _db(_home);
     try {
       final names = [for (final name in await db.listDatabases()) '$name']
         ..sort();
@@ -116,7 +130,7 @@ class MongoDriver implements DocumentDriver {
 
   @override
   Future<List<CollectionInfo>> listCollections(String database) =>
-      _guard(() async {
+      _guardIn(database, () async {
         final infos = await (await _db(database)).getCollectionInfos();
         return [
           for (final info in infos)
@@ -142,7 +156,7 @@ class MongoDriver implements DocumentDriver {
     Map<String, dynamic>? sort,
     int skip = 0,
     int limit = 20,
-  }) => _guard(() async {
+  }) => _guardIn(database, () async {
     final watch = Stopwatch()..start();
     final coll = await _collection(database, collection);
     // One extra document tells whether there are more.
@@ -172,7 +186,7 @@ class MongoDriver implements DocumentDriver {
     String collection,
     List<Map<String, dynamic>> pipeline, {
     int limit = 20,
-  }) => _guard(() async {
+  }) => _guardIn(database, () async {
     final watch = Stopwatch()..start();
     final coll = await _collection(database, collection);
     final docs = await coll.modernAggregate([
@@ -191,7 +205,8 @@ class MongoDriver implements DocumentDriver {
     String database,
     String collection, [
     Map<String, dynamic> filter = const {},
-  ]) => _guard(
+  ]) => _guardIn(
+    database,
     () async => (await _collection(database, collection)).count(filter),
   );
 
@@ -199,7 +214,8 @@ class MongoDriver implements DocumentDriver {
   Future<List<Map<String, dynamic>>> listIndexes(
     String database,
     String collection,
-  ) => _guard(
+  ) => _guardIn(
+    database,
     () async => (await _collection(database, collection)).getIndexes(),
   );
 
@@ -208,7 +224,7 @@ class MongoDriver implements DocumentDriver {
     String database,
     String collection,
     Map<String, dynamic> document,
-  ) => _guard(() async {
+  ) => _guardIn(database, () async {
     final result = await (await _collection(
       database,
       collection,
@@ -223,7 +239,7 @@ class MongoDriver implements DocumentDriver {
     String collection,
     Map<String, dynamic> filter,
     Map<String, dynamic> update,
-  ) => _guard(() async {
+  ) => _guardIn(database, () async {
     final result = await (await _collection(
       database,
       collection,
@@ -242,7 +258,7 @@ class MongoDriver implements DocumentDriver {
     String database,
     String collection,
     Map<String, dynamic> filter,
-  ) => _guard(() async {
+  ) => _guardIn(database, () async {
     final result = await (await _collection(
       database,
       collection,
@@ -260,6 +276,36 @@ class MongoDriver implements DocumentDriver {
       throw DriverException(
         error.errmsg ?? 'Write failed',
         code: error.code?.toString(),
+      );
+    }
+  }
+
+  /// [_guard] for an operation on [database]: its connection is marked in
+  /// use meanwhile, and idle ones beyond [_maxOpen] are closed after.
+  Future<T> _guardIn<T>(String database, Future<T> Function() body) async {
+    _busy[database] = (_busy[database] ?? 0) + 1;
+    // Most recently used last.
+    if (_dbs.remove(database) case final db?) _dbs[database] = db;
+    try {
+      return await _guard(body);
+    } finally {
+      if ((_busy[database] = _busy[database]! - 1) == 0) _busy.remove(database);
+      _closeIdle();
+    }
+  }
+
+  /// Closes the least recently used connections beyond [_maxOpen], except
+  /// the home database's and any in use.
+  void _closeIdle() {
+    if (_dbs.length <= _maxOpen) return;
+    final idle = [
+      for (final name in _dbs.keys)
+        if (name != _home && !_busy.containsKey(name)) name,
+    ];
+    for (final name in idle.take(_dbs.length - _maxOpen)) {
+      final db = _dbs.remove(name)!;
+      unawaited(
+        db.then((db) => db.close()).then((_) {}, onError: (Object _) {}),
       );
     }
   }

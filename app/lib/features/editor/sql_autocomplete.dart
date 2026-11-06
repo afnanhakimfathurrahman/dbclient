@@ -36,12 +36,23 @@ class ProviderSqlCatalog implements SqlCatalog {
   List<String>? schemas() => _ref.read(schemasProvider(_connectionId)).value;
 
   @override
-  List<DbObject>? objects(String schema) =>
-      _ref.read(objectsProvider((_connectionId, schema))).value;
+  List<DbObject>? objects(String schema) {
+    // Same for half-typed schema names. The default schema is always
+    // asked for, as the schema list may not have loaded yet.
+    if (schema != defaultSchema && !(schemas()?.contains(schema) ?? false)) {
+      return null;
+    }
+    return _ref.read(objectsProvider((_connectionId, schema))).value;
+  }
 
+  /// Loads columns only for tables the schema has, so half-typed names
+  /// ("u", "us", "use"…) don't each start a query and a cache entry.
   @override
-  List<ColumnInfo>? columns(String schema, String table) =>
-      _ref.read(columnsProvider((_connectionId, schema, table))).value;
+  List<ColumnInfo>? columns(String schema, String table) {
+    final known = objects(schema)?.any((o) => o.name == table) ?? false;
+    if (!known) return null;
+    return _ref.read(columnsProvider((_connectionId, schema, table))).value;
+  }
 }
 
 class _SqlPrompt extends CodePrompt {

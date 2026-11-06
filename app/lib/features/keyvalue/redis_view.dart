@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme.dart';
 import '../../drivers/driver.dart';
 import '../../drivers/key_value.dart';
+import '../../drivers/redis/redis_driver.dart';
 import '../../drivers/redis/resp.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
@@ -21,6 +22,51 @@ Color redisTypeColor(String type) => switch (type) {
   'zset' => const Color(0xFFEC4899),
   'stream' => const Color(0xFF06B6D4),
   _ => const Color(0xFF64748B),
+};
+
+/// Characters of a value shown in one text widget; laying out much more is
+/// slow.
+const _maxDisplayChars = 100000;
+
+final _displayCache = Expando<(String, bool)>();
+
+/// [data]'s text as shown, JSON pretty-printed, and whether it was cut at
+/// [_maxDisplayChars]. Computed once per loaded value.
+(String, bool) _displayText(KeyData data) => _displayCache[data] ??=
+    redisDisplayText(data.text ?? '', tryJson: !data.textTruncated);
+
+/// [text] pretty-printed if it is JSON, cut at [maxChars]; with whether it
+/// was cut.
+@visibleForTesting
+(String, bool) redisDisplayText(
+  String text, {
+  bool tryJson = true,
+  int maxChars = _maxDisplayChars,
+}) {
+  var display = text;
+  final start = text.trimLeft();
+  if (tryJson && (start.startsWith('{') || start.startsWith('['))) {
+    try {
+      display = const JsonEncoder.withIndent('  ').convert(jsonDecode(text));
+    } on FormatException {
+      // Not JSON after all: shown as is.
+    }
+  }
+  return display.length > maxChars
+      ? (display.substring(0, maxChars), true)
+      : (display, false);
+}
+
+/// Console replies formatted once each, capped at [_maxReplyChars].
+final _replyCache = Expando<String>();
+const _maxReplyChars = 100000;
+
+String _formatReply(Object? reply) => switch (reply) {
+  // Expando can't key these; they format cheaply anyway.
+  null ||
+  int() ||
+  String() => formatRedisReply(reply, maxChars: _maxReplyChars),
+  _ => _replyCache[reply] ??= formatRedisReply(reply, maxChars: _maxReplyChars),
 };
 
 String formatTtl(int ttl) {
@@ -387,16 +433,27 @@ class _RedisViewState extends ConsumerState<RedisView> {
         : null;
 
     switch (data.type) {
+      case 'ReJSON-RL' when data.text == null && data.textTruncated:
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              'This JSON document is too large to show here. Read parts of '
+              'it in the console, e.g. JSON.GET $key \$.path',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+          ),
+        );
       case 'string' || 'ReJSON-RL':
         final text = data.text ?? '';
-        String display = text;
-        try {
-          // Pretty-print JSON strings; anything else shows as is.
-          display = const JsonEncoder.withIndent('  ')
-              .convert(jsonDecode(text));
-        } on FormatException {
-          display = text;
-        }
+        final (display, cut) = _displayText(data);
+        final note = [
+          if (data.textTruncated)
+            'Showing the first ${RedisDriver.stringPreviewBytes ~/ 1024} KB '
+                'of ${data.length} bytes, read-only',
+          if (cut) 'Showing the first $_maxDisplayChars characters',
+        ].join(' · ');
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -409,22 +466,39 @@ class _RedisViewState extends ConsumerState<RedisView> {
                 ),
               ),
             ),
-            if (data.type == 'string')
+            if (data.type == 'string' || note.isNotEmpty)
               _ActionBar(
                 children: [
-                  FilledButton.tonalIcon(
-                    icon: const Icon(Icons.edit_outlined, size: 16),
-                    label: const Text('Edit value'),
-                    onPressed: () async {
-                      final values = await _prompt('Edit $key', [
-                        ('Value', text),
-                      ], multiline: true);
-                      // KEEPTTL keeps the expiry (Redis 6+).
-                      if (values != null) {
-                        await _write(['SET', key, values[0], 'KEEPTTL']);
-                      }
-                    },
-                  ),
+                  if (data.type == 'string')
+                    FilledButton.tonalIcon(
+                      icon: const Icon(Icons.edit_outlined, size: 16),
+                      label: const Text('Edit value'),
+                      // Saving a partial value would cut it short.
+                      onPressed: data.textTruncated
+                          ? null
+                          : () async {
+                              final values = await _prompt('Edit $key', [
+                                ('Value', text),
+                              ], multiline: true);
+                              // KEEPTTL keeps the expiry (Redis 6+).
+                              if (values != null) {
+                                await _write([
+                                  'SET',
+                                  key,
+                                  values[0],
+                                  'KEEPTTL',
+                                ]);
+                              }
+                            },
+                    ),
+                  if (note.isNotEmpty)
+                    Text(
+                      note,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
                 ],
               ),
           ],
@@ -1214,7 +1288,7 @@ class _RedisConsoleState extends State<_RedisConsole> {
                                 ),
                               ),
                               Text(
-                                formatRedisReply(reply),
+                                _formatReply(reply),
                                 style: monoStyle.copyWith(
                                   color: reply is RespError
                                       ? scheme.error

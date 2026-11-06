@@ -1091,7 +1091,7 @@ class _ManageableMetadataPageState<T>
     if (a is num && b is num) return a.compareTo(b);
     if (a is DateTime && b is DateTime) return a.compareTo(b);
     if (a is bool && b is bool) return a == b ? 0 : (a ? 1 : -1);
-    return (formatValue(a) ?? '').compareTo(formatValue(b) ?? '');
+    return (formatCellText(a) ?? '').compareTo(formatCellText(b) ?? '');
   }
 
   List<T> _processItems(List<T> all) {
@@ -1104,7 +1104,7 @@ class _ManageableMetadataPageState<T>
       items = items.where((item) {
         final cells = widget.row(0, item);
         return cells.any(
-          (c) => (formatValue(c) ?? '').toLowerCase().contains(q),
+          (c) => (formatCellText(c) ?? '').toLowerCase().contains(q),
         );
       }).toList();
     }
@@ -1134,7 +1134,7 @@ class _ManageableMetadataPageState<T>
                       sample.fold<int>(0, (m, item) {
                         final cells = widget.row(0, item);
                         final val = col < cells.length ? cells[col] : null;
-                        return math.max(m, (formatValue(val) ?? '').length);
+                        return math.max(m, (formatCellText(val) ?? '').length);
                       }),
                     ) *
                     7.5 +

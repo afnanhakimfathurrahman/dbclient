@@ -104,6 +104,7 @@ class MySqlDriver implements SqlDriver {
       _guard(() async {
         final watch = Stopwatch()..start();
         _running = true;
+        Future<void>? cancelling;
         try {
           final result = await _queryConn.execute(sql, null, true);
           if (result.numOfColumns == 0) {
@@ -117,19 +118,22 @@ class MySqlDriver implements SqlDriver {
           }
           final columns = result.cols.toList();
           final rows = <List<Object?>>[];
+          final budget = RowBudget(maxRows: maxRows);
           var truncated = false;
           try {
             await for (final row in result.rowsStream) {
-              if (rows.length < maxRows) {
-                rows.add([
+              if (!budget.full) {
+                final values = [
                   for (final (i, column) in columns.indexed)
                     _decode(row.colAt(i), column.type.intVal),
-                ]);
+                ];
+                rows.add(values);
+                budget.add(values);
               } else if (!truncated) {
                 // Stop the query on the server, then drain what's in flight
                 // so the connection stays usable.
                 truncated = true;
-                unawaited(cancel());
+                cancelling = cancel().catchError((_) {});
               }
             }
           } on MySQLServerException catch (e) {
@@ -149,6 +153,8 @@ class MySqlDriver implements SqlDriver {
             truncated: truncated,
           );
         } finally {
+          // A KILL QUERY still in flight would hit the next statement.
+          await cancelling;
           _running = false;
         }
       });

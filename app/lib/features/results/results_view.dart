@@ -53,6 +53,15 @@ class ResultsView extends StatelessWidget {
               outcome: outcome,
               error: error,
             ),
+            StatementOutcome(rowsReleased: true, :final result?) =>
+              _Placeholder(
+                child: Text(
+                  'Returned ${result.columns.length} column(s). Only the '
+                  'last ${EditorTab.keptResultSets} result sets of a script '
+                  'keep their rows; run this statement again to see them.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
             StatementOutcome(result: final result?) when result.hasResultSet =>
               ResultGrid(key: ObjectKey(result), result: result),
             StatementOutcome(result: final result?) => _Placeholder(
@@ -63,7 +72,7 @@ class ResultsView extends StatelessWidget {
             _ => const SizedBox.shrink(),
           },
         ),
-        if (outcome.result case final result?)
+        if (outcome.result case final result? when !outcome.rowsReleased)
           _StatusBar(result: result, connectionId: tab.connectionId),
       ],
     );
@@ -142,10 +151,12 @@ class _StatusBar extends StatelessWidget {
   final QueryResult result;
   final String connectionId;
 
-  void _quickExport(BuildContext context, ExportFormat format) {
-    final text = ResultExporter.export(result, format);
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
+  Future<void> _quickExport(BuildContext context, ExportFormat format) async {
+    final messenger = ScaffoldMessenger.of(context);
+    // Off the UI isolate: thousands of rows take a while to serialize.
+    final text = await ResultExporter.exportInBackground(result, format);
+    await Clipboard.setData(ClipboardData(text: text));
+    messenger.showSnackBar(
       SnackBar(
         content: Text(
           '${format.label} copied to clipboard (${result.rows.length} rows)',
@@ -565,8 +576,15 @@ class _ResultGridState extends State<ResultGrid> {
   /// Longer or multi-line values are edited in a dialog instead of inline.
   static const _inlineEditMaxLength = 200;
 
-  late final List<double> _widths = _measureColumns();
+  late List<double> _widths = _measureColumns();
   late List<int> _order = List.generate(widget.result.rows.length, (i) => i);
+
+  /// Grid text of loaded values ([formatCellText]) by data row, filled a
+  /// row at a time when first needed, so scrolling and repaints don't
+  /// re-format (or re-encode JSON). Loaded rows never change: staged edits
+  /// live in the editor and are drawn from there, so entries stay valid
+  /// until [result] is replaced.
+  late List<List<String?>?> _cellTexts = List.filled(result.rows.length, null);
   int? _sortColumn;
   bool _ascending = true;
   (int row, int column)? _selected;
@@ -603,6 +621,23 @@ class _ResultGridState extends State<ResultGrid> {
       oldWidget.editor?.removeListener(_onEditorChanged);
       editor?.addListener(_onEditorChanged);
     }
+    if (!identical(oldWidget.result.rows, result.rows) ||
+        oldWidget.result.columns.length != result.columns.length) {
+      // Callers usually key the grid by its result; if not, start over.
+      _cellTexts = List.filled(result.rows.length, null);
+      _widths = _measureColumns();
+      _order = List.generate(result.rows.length, (i) => i);
+      _sortColumn = null;
+      _ascending = true;
+    }
+  }
+
+  /// Grid text of loaded value ([data], [column]); null for NULL.
+  String? _cellTextAt(int data, int column) {
+    final texts = _cellTexts[data] ??= [
+      for (final value in result.rows[data]) formatCellText(value),
+    ];
+    return texts[column];
   }
 
   @override
@@ -712,15 +747,15 @@ class _ResultGridState extends State<ResultGrid> {
 
   /// Width from header and a sample of rows, ~7.5px per character.
   List<double> _measureColumns() {
-    final sample = result.rows.take(200);
+    final sample = math.min(result.rows.length, 200);
     return [
       for (final (i, column) in result.columns.indexed)
         (math.max(
                       math.max(column.name.length, column.dataType.length),
-                      sample.fold<int>(
+                      List.generate(sample, (row) => row).fold<int>(
                         0,
                         (m, row) =>
-                            math.max(m, (formatValue(row[i]) ?? 'NULL').length),
+                            math.max(m, (_cellTextAt(row, i) ?? 'NULL').length),
                       ),
                     ) *
                     7.5 +
@@ -743,9 +778,19 @@ class _ResultGridState extends State<ResultGrid> {
         _sortColumn = column;
         _ascending = true;
       }
+      // One key per row, made once rather than in every comparison: values
+      // that compare natively stay as they are, the rest (JSON, bytes…)
+      // compare by their grid text.
       final rows = result.rows;
+      final keys = [
+        for (final (r, row) in rows.indexed)
+          switch (row[column]) {
+            final v && (null || num() || DateTime() || bool() || String()) => v,
+            _ => _cellTextAt(r, column),
+          },
+      ];
       _order.sort((a, b) {
-        final cmp = _compare(rows[a][column], rows[b][column]);
+        final cmp = _compare(keys[a], keys[b]);
         return _ascending ? cmp : -cmp;
       });
     });
@@ -1106,7 +1151,14 @@ class _ResultGridState extends State<ResultGrid> {
     // What to show: the staged value, DEFAULT for an untouched cell of a new
     // row, or the loaded value.
     final isDefault = change == RowChange.inserted && staged == null;
-    final text = staged != null ? staged.text : formatValue(value);
+    final text = staged != null
+        ? switch (staged.text) {
+            final staged? => cellText(staged),
+            null => null,
+          }
+        : data < result.rows.length
+        ? _cellTextAt(data, column)
+        : null;
     final isNumber = staged == null && value is num;
 
     final Color? background = switch (change) {
@@ -1156,7 +1208,7 @@ class _ResultGridState extends State<ResultGrid> {
             : text == null
             ? badge('NULL')
             : Text(
-                text.replaceAll('\n', '↵'),
+                text,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: monoStyle.copyWith(
