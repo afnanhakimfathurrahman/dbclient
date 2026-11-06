@@ -95,6 +95,13 @@ tar -xzf db-client-linux-x64.tar.gz -C ~/.local/share
 
 Saved passwords use your desktop's keyring (GNOME Keyring or KWallet).
 
+### Android 7.0 or later
+
+Download `db-client-android.apk` on the phone, open it and allow installing
+from that source when asked. Release APKs are signed with the key named in
+`app/android/key.properties` (not committed); keep that key, since updates
+must be signed with the same one.
+
 ## Build from source
 
 You need [Flutter](https://docs.flutter.dev/get-started/install) 3.47 or
