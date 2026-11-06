@@ -49,15 +49,24 @@ All drivers are built in. You can paste a connection URL (for example
 
 Download the file for your system from the
 [latest release](https://github.com/kamaludin68/db-client-releases/releases/latest).
-The app is portable: unpack it and run it.
-
 ### Windows 10 / 11 (64-bit)
 
-1. Download `db-client-windows-x64.zip` and extract it, for example to
-   `C:\Apps`.
-2. Run `DB Client\db_client.exe`.
-3. If SmartScreen says it protected your PC, click **More info**, then
+1. Download `db-client-windows-x64-setup.exe` and run it. It installs for
+   your account only (no administrator rights needed) and adds DB Client to
+   the Start menu.
+2. If SmartScreen says it protected your PC, click **More info**, then
    **Run anyway**.
+
+Uninstall it from **Settings → Apps**. For a portable copy instead, extract
+`db-client-windows-x64.zip` anywhere and run `DB Client\db_client.exe`.
+
+To build the installer locally (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
+
+```sh
+cd app
+flutter build windows --release
+iscc /DAppVersion=0.1.0 windows\installer\db-client.iss   # -> build\installer\
+```
 
 ### macOS 12 or later (Apple silicon and Intel)
 
