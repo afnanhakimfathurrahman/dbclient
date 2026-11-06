@@ -14,6 +14,7 @@ import '../connections/connection_dialog.dart';
 import '../history/history_dialog.dart';
 import '../documents/collection_view.dart';
 import '../inspector/inspector_view.dart';
+import '../keyvalue/redis_view.dart';
 import '../results/results_view.dart';
 
 /// Editor tabs plus the active tab's editor and results.
@@ -42,6 +43,7 @@ class Workspace extends ConsumerWidget {
               key: ValueKey(active.id),
               tab: active,
             ),
+            RedisTab() => RedisView(key: ValueKey(active.id), tab: active),
           },
         ),
       ],
@@ -191,6 +193,7 @@ class _TabChip extends StatelessWidget {
                           switch (tab) {
                             InspectorTab() => Icons.table_chart_rounded,
                             CollectionTab() => Icons.data_object_rounded,
+                            RedisTab() => Icons.bolt_rounded,
                             EditorTab() => Icons.terminal_rounded,
                           },
                           size: 14,

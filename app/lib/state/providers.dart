@@ -8,6 +8,7 @@ import '../data/repositories.dart';
 import '../data/secret_store.dart';
 import '../drivers/document.dart';
 import '../drivers/driver.dart';
+import '../drivers/key_value.dart';
 import '../drivers/registry.dart';
 import 'workspace_tabs.dart';
 
@@ -158,6 +159,7 @@ final routinesProvider =
 void invalidateMetadata(WidgetRef ref, String connectionId) {
   ref.invalidate(documentDatabasesProvider(connectionId));
   ref.invalidate(collectionsProvider);
+  ref.invalidate(redisDatabasesProvider(connectionId));
   ref.invalidate(schemasProvider(connectionId));
   ref.invalidate(objectsProvider);
   ref.invalidate(columnsProvider);
@@ -247,4 +249,27 @@ final collectionsProvider =
       final driver = ref.watch(documentDriverProvider(key.$1));
       if (driver == null) return const [];
       return driver.listCollections(key.$2);
+    });
+
+/// The key-value driver for a connection, or null if not connected or not
+/// a key-value engine.
+final keyValueDriverProvider = Provider.family<KeyValueDriver?, String>((
+  ref,
+  id,
+) {
+  final driver = ref.watch(driverProvider(id));
+  return driver is KeyValueDriver ? driver : null;
+});
+
+/// Redis databases with their key counts (0 for empty ones).
+final redisDatabasesProvider =
+    FutureProvider.family<List<(int db, int keys)>, String>((
+      ref,
+      connectionId,
+    ) async {
+      final driver = ref.watch(keyValueDriverProvider(connectionId));
+      if (driver == null) return const [];
+      final count = await driver.databaseCount();
+      final keys = await driver.keyCounts();
+      return [for (var db = 0; db < count; db++) (db, keys[db] ?? 0)];
     });

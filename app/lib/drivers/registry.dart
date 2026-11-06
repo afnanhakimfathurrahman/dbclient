@@ -2,12 +2,14 @@ import 'clickhouse/clickhouse_driver.dart';
 import 'driver.dart';
 import 'mongodb/mongodb_driver.dart';
 import 'postgres/postgres_driver.dart';
+import 'redis/redis_driver.dart';
 
 /// Engines offered when creating a connection.
 const supportedEngines = [
   DatabaseEngine.postgres,
   DatabaseEngine.clickhouse,
   DatabaseEngine.mongodb,
+  DatabaseEngine.redis,
 ];
 
 DatabaseDriver createDriver(ConnectionConfig config) {
@@ -15,8 +17,6 @@ DatabaseDriver createDriver(ConnectionConfig config) {
     DatabaseEngine.postgres => PostgresDriver(config),
     DatabaseEngine.clickhouse => ClickHouseDriver(config),
     DatabaseEngine.mongodb => MongoDriver(config),
-    DatabaseEngine.redis => throw UnsupportedError(
-      '${config.engine.label} is not supported yet',
-    ),
+    DatabaseEngine.redis => RedisDriver(config),
   };
 }

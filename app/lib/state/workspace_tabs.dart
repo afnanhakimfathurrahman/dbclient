@@ -7,7 +7,9 @@ import 'package:uuid/uuid.dart';
 import '../data/repositories.dart';
 import '../drivers/document.dart';
 import '../drivers/driver.dart';
+import '../drivers/key_value.dart';
 import '../drivers/mongodb/mongo_json.dart';
+import '../drivers/redis/resp.dart';
 import '../drivers/sql_splitter.dart';
 import 'data_editor.dart';
 import 'providers.dart';
@@ -289,6 +291,150 @@ class CollectionTab extends WorkspaceTab {
   }
 }
 
+/// One Redis database: a key browser (pattern scan, selected key's value)
+/// and a redis-cli style console.
+class RedisTab extends WorkspaceTab {
+  RedisTab({required this.connectionId, required this.db});
+
+  @override
+  final String connectionId;
+  final int db;
+
+  @override
+  String get title => 'db$db';
+
+  // Key browser.
+  final pattern = TextEditingController(text: '*');
+  List<KeyInfo> keys = const [];
+  String _cursor = '0';
+  bool get scanComplete => _cursor == '0';
+  bool _scanned = false;
+  bool get scanned => _scanned;
+  Object? scanError;
+
+  String? selectedKey;
+  KeyData? value;
+  Object? valueError;
+
+  // Console.
+  bool consoleMode = false;
+  final consoleInput = TextEditingController();
+  final consoleLog = <(String command, Object? reply)>[];
+  final history = <String>[];
+
+  KeyValueDriver? _consoleDriver;
+  bool _scanning = false;
+  bool _reading = false;
+  bool _consoleRunning = false;
+  bool get consoleRunning => _consoleRunning;
+
+  @override
+  bool get busy => _scanning || _reading || _consoleRunning;
+
+  bool get scanning => _scanning;
+  bool get reading => _reading;
+
+  /// Scans from the start, or continues with [more].
+  Future<void> scan(KeyValueDriver driver, {bool more = false}) async {
+    if (_scanning) return;
+    _scanning = true;
+    scanError = null;
+    notifyListeners();
+    try {
+      final page = await driver.scan(
+        db,
+        pattern: pattern.text.trim(),
+        cursor: more ? _cursor : '0',
+      );
+      keys = more ? [...keys, ...page.keys] : page.keys;
+      _cursor = page.cursor;
+      _scanned = true;
+    } on DriverException catch (e) {
+      scanError = e;
+    } finally {
+      _scanning = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> open(KeyValueDriver driver, String key) async {
+    selectedKey = key;
+    value = null;
+    await reloadValue(driver);
+  }
+
+  Future<void> reloadValue(KeyValueDriver driver) async {
+    final key = selectedKey;
+    if (key == null) return;
+    _reading = true;
+    valueError = null;
+    notifyListeners();
+    try {
+      final data = await driver.read(db, key);
+      // Ignore a late reply after another key was selected.
+      if (selectedKey == key) value = data;
+    } on DriverException catch (e) {
+      if (selectedKey == key) {
+        value = null;
+        valueError = e;
+      }
+    } finally {
+      _reading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Drops a key that was deleted or renamed from the list.
+  void forgetKey(String key) {
+    keys = [
+      for (final k in keys)
+        if (k.name != key) k,
+    ];
+    if (selectedKey == key) {
+      selectedKey = null;
+      value = null;
+    }
+    notifyListeners();
+  }
+
+  Future<void> runConsole(KeyValueDriver driver, String line) async {
+    final List<String> args;
+    try {
+      args = splitRedisCommand(line);
+    } on FormatException catch (e) {
+      consoleLog.add((line, RespError('ERR ${e.message}')));
+      notifyListeners();
+      return;
+    }
+    if (args.isEmpty) return;
+    if (history.isEmpty || history.last != line) history.add(line);
+    _consoleRunning = true;
+    _consoleDriver = driver;
+    notifyListeners();
+    Object? reply;
+    try {
+      reply = await driver.console(db, args);
+    } on DriverException catch (e) {
+      reply = RespError(e.message);
+    } finally {
+      _consoleRunning = false;
+      _consoleDriver = null;
+    }
+    consoleLog.add((line, reply));
+    notifyListeners();
+  }
+
+  @override
+  Future<void> cancel() async => _consoleDriver?.cancel();
+
+  @override
+  void dispose() {
+    pattern.dispose();
+    consoleInput.dispose();
+    super.dispose();
+  }
+}
+
 /// One SQL editor tab: its text, the connection it targets and the results
 /// of the last run.
 class EditorTab extends WorkspaceTab {
@@ -477,6 +623,18 @@ class WorkspaceTabsNotifier extends Notifier<WorkspaceTabsState> {
       object: object,
       rowLimit: ref.read(dataRowLimitProvider),
     );
+    state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
+  }
+
+  /// Opens a Redis database, or switches to it if already open.
+  void openRedis(String connectionId, int db) {
+    for (final tab in state.tabs) {
+      if (tab is RedisTab && tab.connectionId == connectionId && tab.db == db) {
+        activate(tab.id);
+        return;
+      }
+    }
+    final tab = RedisTab(connectionId: connectionId, db: db);
     state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
   }
 
