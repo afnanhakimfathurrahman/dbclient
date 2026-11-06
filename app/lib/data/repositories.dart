@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/drift.dart';
 
 import '../drivers/driver.dart';
@@ -34,6 +36,9 @@ class ConnectionRepository {
             tlsMode: config.tlsMode.name,
             color: config.color,
             savePassword: Value(config.savePassword),
+            options: Value(
+              config.options.isEmpty ? null : jsonEncode(config.options),
+            ),
           ),
         );
     if (!config.savePassword) {
@@ -61,6 +66,11 @@ class ConnectionRepository {
     tlsMode: TlsMode.values.byName(row.tlsMode),
     color: row.color,
     savePassword: row.savePassword,
+    options: row.options == null
+        ? const {}
+        : (jsonDecode(row.options!) as Map<String, dynamic>).map(
+            (k, v) => MapEntry(k, '$v'),
+          ),
   );
 }
 

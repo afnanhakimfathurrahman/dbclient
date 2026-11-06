@@ -3,7 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../app/engine_style.dart';
 import '../../app/theme.dart';
+import '../../drivers/connection_uri.dart';
 import '../../drivers/driver.dart';
 import '../../drivers/registry.dart';
 import '../../state/providers.dart';
@@ -48,6 +50,18 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
   final _password = TextEditingController();
   final _urlController = TextEditingController();
 
+  late DatabaseEngine _engine =
+      widget.existing?.engine ?? DatabaseEngine.postgres;
+
+  // MongoDB-only settings, stored in [ConnectionConfig.options].
+  late bool _srv = widget.existing?.options['srv'] == 'true';
+  late final _authSource = TextEditingController(
+    text: widget.existing?.options['authSource'],
+  );
+  late final _params = TextEditingController(
+    text: widget.existing?.options['params'],
+  );
+
   late TlsMode _tlsMode = widget.existing?.tlsMode ?? TlsMode.disable;
   late int _color = widget.existing?.color ?? connectionColors.first;
   late bool _savePassword = widget.existing?.savePassword ?? true;
@@ -80,66 +94,82 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
   }
 
   void _parseConnectionUrl(String url) {
-    final text = url.trim();
-    if (text.isEmpty) return;
-
+    if (url.trim().isEmpty) return;
+    final ParsedConnectionUri parsed;
     try {
-      final uri = Uri.parse(text);
-      if (uri.scheme != 'postgres' && uri.scheme != 'postgresql') {
-        setState(() => _urlError = 'Scheme must be postgres:// or postgresql://');
-        return;
-      }
-
-      if (uri.host.isNotEmpty) {
-        _host.text = uri.host;
-      }
-      if (uri.hasPort && uri.port > 0) {
-        _port.text = uri.port.toString();
-      } else {
-        _port.text = '5432';
-      }
-      if (uri.pathSegments.isNotEmpty && uri.pathSegments.first.isNotEmpty) {
-        _database.text = uri.pathSegments.first;
-      }
-      if (uri.userInfo.isNotEmpty) {
-        final parts = uri.userInfo.split(':');
-        _username.text = Uri.decodeComponent(parts.first);
-        if (parts.length > 1) {
-          _password.text = Uri.decodeComponent(parts.sublist(1).join(':'));
-          _passwordTouched = true;
-        }
-      }
-
-      final sslmode = uri.queryParameters['sslmode']?.toLowerCase();
-      if (sslmode != null) {
-        if (sslmode == 'disable') {
-          _tlsMode = TlsMode.disable;
-        } else if (sslmode == 'verify-full' || sslmode == 'verify-ca') {
-          _tlsMode = TlsMode.verifyFull;
-        } else {
-          _tlsMode = TlsMode.require;
-        }
-      }
-
-      if (_name.text.isEmpty && _host.text.isNotEmpty && _database.text.isNotEmpty) {
-        _name.text = '${_host.text}/${_database.text}';
-      }
-
-      setState(() {
-        _showUrlInput = false;
-        _urlError = null;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Connection parameters populated from URL'),
-          duration: Duration(seconds: 2),
-        ),
+      parsed = parseConnectionUri(url);
+    } on FormatException catch (e) {
+      setState(() => _urlError = e.message);
+      return;
+    }
+    if (_isEdit && parsed.engine != _engine) {
+      setState(
+        () => _urlError =
+            'This connection is ${_engine.label}; the URI is for '
+            '${parsed.engine.label}',
       );
-    } catch (e) {
-      setState(() => _urlError = 'Invalid connection URI format');
+      return;
+    }
+
+    setState(() {
+      _selectEngine(parsed.engine);
+      _host.text = parsed.host;
+      if (parsed.tlsMode case final tls?) _tlsMode = tls;
+      _port.text =
+          '${parsed.port ?? _engine.portFor(tls: _tlsMode != TlsMode.disable)}';
+      _database.text = parsed.database ?? _engine.defaultDatabase;
+      if (parsed.username case final user?) _username.text = user;
+      if (parsed.password case final password?) {
+        _password.text = password;
+        _passwordTouched = true;
+      }
+      _srv = parsed.options['srv'] == 'true';
+      _authSource.text = parsed.options['authSource'] ?? '';
+      _params.text = parsed.options['params'] ?? '';
+      if (_name.text.isEmpty) _name.text = '${parsed.host}/${_database.text}';
+      _showUrlInput = false;
+      _urlError = null;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${parsed.engine.label} settings filled from URI'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// Switches engine, replacing port, database and username only where they
+  /// still hold the previous engine's defaults, so typed values survive.
+  void _selectEngine(DatabaseEngine engine) {
+    final old = _engine;
+    if (engine == old) return;
+    final tls = _tlsMode != TlsMode.disable;
+    _engine = engine;
+    if (_port.text.isEmpty || _port.text == '${old.portFor(tls: tls)}') {
+      _port.text = '${engine.portFor(tls: tls)}';
+    }
+    if (_database.text.isEmpty || _database.text == old.defaultDatabase) {
+      _database.text = engine.defaultDatabase;
+    }
+    if (_username.text == old.defaultUsername) {
+      _username.text = engine.defaultUsername;
     }
   }
+
+  void _setTlsMode(TlsMode mode) {
+    final wasTls = _tlsMode != TlsMode.disable;
+    final isTls = mode != TlsMode.disable;
+    setState(() {
+      // ClickHouse serves HTTPS on another port.
+      if (wasTls != isTls && _port.text == '${_engine.portFor(tls: wasTls)}') {
+        _port.text = '${_engine.portFor(tls: isTls)}';
+      }
+      _tlsMode = mode;
+    });
+  }
+
+  bool get _usesPort => !(_engine == DatabaseEngine.mongodb && _srv);
 
   ConnectionConfig _buildConfig() {
     final host = _host.text.trim();
@@ -147,14 +177,22 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
     return ConnectionConfig(
       id: widget.existing?.id ?? const Uuid().v4(),
       name: _name.text.trim().isEmpty ? '$host/$database' : _name.text.trim(),
-      engine: DatabaseEngine.postgres,
+      engine: _engine,
       host: host,
-      port: int.parse(_port.text.trim()),
+      port: int.tryParse(_port.text.trim()) ?? _engine.defaultPort,
       database: database,
       username: _username.text.trim(),
       tlsMode: _tlsMode,
       color: _color,
       savePassword: _savePassword,
+      options: {
+        if (_engine == DatabaseEngine.mongodb) ...{
+          if (_srv) 'srv': 'true',
+          if (_authSource.text.trim().isNotEmpty)
+            'authSource': _authSource.text.trim(),
+          if (_params.text.trim().isNotEmpty) 'params': _params.text.trim(),
+        },
+      },
     );
   }
 
@@ -273,9 +311,9 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                         .withValues(alpha: 0.35),
                                   ),
                                 ),
-                                child: const Text(
-                                  'PostgreSQL',
-                                  style: TextStyle(
+                                child: Text(
+                                  _engine.label,
+                                  style: const TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.bold,
                                     color: Color(0xFF38BDF8),
@@ -361,7 +399,7 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                               style: monoStyle.copyWith(fontSize: 11.5),
                               decoration: InputDecoration(
                                 hintText:
-                                    'postgresql://user:password@localhost:5432/dbname?sslmode=disable',
+                                    'postgresql://…  mongodb+srv://…  redis://…  clickhouse://…',
                                 hintStyle: TextStyle(
                                   fontSize: 11,
                                   color: scheme.onSurfaceVariant,
@@ -429,6 +467,14 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
+                            if (!_isEdit) ...[
+                              _EnginePicker(
+                                selected: _engine,
+                                onSelected: (engine) =>
+                                    setState(() => _selectEngine(engine)),
+                              ),
+                              const SizedBox(height: 16),
+                            ],
                             TextFormField(
                               controller: _name,
                               decoration: const InputDecoration(
@@ -448,25 +494,33 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                   flex: 3,
                                   child: TextFormField(
                                     controller: _host,
-                                    decoration: const InputDecoration(
+                                    decoration: InputDecoration(
                                       labelText: 'Host / IP Address *',
-                                      hintText: 'e.g. localhost, 127.0.0.1, rds.aws.com',
+                                      hintText: switch (_engine) {
+                                        DatabaseEngine.mongodb when _srv =>
+                                          'e.g. cluster0.abc.mongodb.net',
+                                        DatabaseEngine.mongodb =>
+                                          'e.g. localhost, or h1:27017,h2:27017',
+                                        _ =>
+                                          'e.g. localhost, 127.0.0.1, rds.aws.com',
+                                      },
                                       isDense: true,
-                                      border: OutlineInputBorder(),
+                                      border: const OutlineInputBorder(),
                                     ),
                                     validator: _required,
                                   ),
                                 ),
+                                if (_usesPort) ...[
                                 const SizedBox(width: 10),
                                 Expanded(
                                   flex: 1,
                                   child: TextFormField(
                                     controller: _port,
-                                    decoration: const InputDecoration(
+                                    decoration: InputDecoration(
                                       labelText: 'Port *',
-                                      hintText: '5432',
+                                      hintText: '${_engine.defaultPort}',
                                       isDense: true,
-                                      border: OutlineInputBorder(),
+                                      border: const OutlineInputBorder(),
                                     ),
                                     keyboardType: TextInputType.number,
                                     inputFormatters: [
@@ -482,8 +536,27 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                     },
                                   ),
                                 ),
+                                ],
                               ],
                             ),
+                            if (_engine == DatabaseEngine.mongodb) ...[
+                              const SizedBox(height: 6),
+                              SwitchListTile(
+                                value: _srv,
+                                onChanged: (v) => setState(() => _srv = v),
+                                title: const Text(
+                                  'DNS seed list (mongodb+srv)',
+                                  style: TextStyle(fontSize: 12.5),
+                                ),
+                                subtitle: const Text(
+                                  'Atlas and other clusters published via DNS; '
+                                  'no port needed',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                                contentPadding: EdgeInsets.zero,
+                                dense: true,
+                              ),
+                            ],
                             const SizedBox(height: 14),
 
                             Row(
@@ -492,30 +565,81 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                 Expanded(
                                   child: TextFormField(
                                     controller: _database,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Database Name *',
-                                      hintText: 'e.g. postgres',
+                                    decoration: InputDecoration(
+                                      labelText:
+                                          _engine == DatabaseEngine.redis
+                                          ? 'Database index *'
+                                          : 'Database Name *',
+                                      hintText:
+                                          'e.g. ${_engine.defaultDatabase}',
                                       isDense: true,
-                                      border: OutlineInputBorder(),
+                                      border: const OutlineInputBorder(),
                                     ),
-                                    validator: _required,
+                                    keyboardType:
+                                        _engine == DatabaseEngine.redis
+                                        ? TextInputType.number
+                                        : null,
+                                    validator: _engine == DatabaseEngine.redis
+                                        ? (v) => int.tryParse(v ?? '') == null
+                                              ? 'A number, e.g. 0'
+                                              : null
+                                        : _required,
                                   ),
                                 ),
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: TextFormField(
                                     controller: _username,
-                                    decoration: const InputDecoration(
-                                      labelText: 'Username *',
-                                      hintText: 'e.g. postgres',
+                                    decoration: InputDecoration(
+                                      labelText: _engine.usernameOptional
+                                          ? 'Username'
+                                          : 'Username *',
+                                      hintText: _engine.usernameOptional
+                                          ? 'Leave empty if not required'
+                                          : 'e.g. ${_engine.defaultUsername}',
                                       isDense: true,
-                                      border: OutlineInputBorder(),
+                                      border: const OutlineInputBorder(),
                                     ),
-                                    validator: _required,
+                                    validator: _engine.usernameOptional
+                                        ? null
+                                        : _required,
                                   ),
                                 ),
                               ],
                             ),
+                            if (_engine == DatabaseEngine.mongodb) ...[
+                              const SizedBox(height: 14),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: TextFormField(
+                                      controller: _authSource,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Auth database',
+                                        hintText: 'admin',
+                                        isDense: true,
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    flex: 2,
+                                    child: TextFormField(
+                                      controller: _params,
+                                      style: monoStyle.copyWith(fontSize: 12),
+                                      decoration: const InputDecoration(
+                                        labelText: 'Extra options',
+                                        hintText: 'replicaSet=rs0&w=majority',
+                                        isDense: true,
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                             const SizedBox(height: 14),
 
                             TextFormField(
@@ -676,6 +800,8 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             DropdownButtonFormField<TlsMode>(
+                              // Rebuilt when a pasted URI changes the mode.
+                              key: ValueKey(_tlsMode),
                               initialValue: _tlsMode,
                               decoration: const InputDecoration(
                                 labelText: 'TLS / SSL Mode',
@@ -707,7 +833,7 @@ class _ConnectionDialogState extends ConsumerState<_ConnectionDialog> {
                                     ),
                                   ),
                               ],
-                              onChanged: (v) => setState(() => _tlsMode = v!),
+                              onChanged: (v) => _setTlsMode(v!),
                             ),
                             const SizedBox(height: 12),
 
@@ -1012,6 +1138,16 @@ Future<DatabaseDriver?> connectWithPrompt(
   }
 }
 
+/// [connectWithPrompt] for SQL work: null unless the engine is relational.
+Future<SqlDriver?> connectSqlWithPrompt(
+  BuildContext context,
+  WidgetRef ref,
+  ConnectionConfig config,
+) async {
+  final driver = await connectWithPrompt(context, ref, config);
+  return driver is SqlDriver ? driver : null;
+}
+
 /// Opens a SQL editor on the most relevant connection: the active tab's, else
 /// one that is already connected, else the first saved one. With no saved
 /// connections, asks the user to create one first.
@@ -1083,6 +1219,122 @@ class _PasswordDialogState extends State<_PasswordDialog> {
           child: const Text('Connect'),
         ),
       ],
+    );
+  }
+}
+
+/// Grid of engine cards for a new connection. All drivers are built in.
+class _EnginePicker extends StatelessWidget {
+  const _EnginePicker({required this.selected, required this.onSelected});
+
+  final DatabaseEngine selected;
+  final ValueChanged<DatabaseEngine> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Database',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 8),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            // Two columns on narrow dialogs, four on wide ones.
+            final columns = constraints.maxWidth < 440 ? 2 : 4;
+            const gap = 8.0;
+            final width =
+                (constraints.maxWidth - gap * (columns - 1)) / columns;
+            return Wrap(
+              spacing: gap,
+              runSpacing: gap,
+              children: [
+                for (final engine in supportedEngines)
+                  SizedBox(
+                    width: width,
+                    child: _EngineCard(
+                      engine: engine,
+                      selected: engine == selected,
+                      onTap: () => onSelected(engine),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _EngineCard extends StatelessWidget {
+  const _EngineCard({
+    required this.engine,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final DatabaseEngine engine;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = engine.accent;
+    return Semantics(
+      selected: selected,
+      button: true,
+      child: Material(
+        color: selected
+            ? accent.withValues(alpha: 0.12)
+            : scheme.surfaceContainerLowest,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: BorderSide(
+            color: selected ? accent : scheme.outlineVariant,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(engine.icon, size: 20, color: accent),
+                const SizedBox(height: 6),
+                Text(
+                  engine.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  engine.blurb,
+                  maxLines: 2,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

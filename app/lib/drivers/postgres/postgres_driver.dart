@@ -12,11 +12,14 @@ import 'postgres_sql.dart';
 /// browsing the schema tree isn't blocked behind a long-running query.
 /// Cancellation opens a short-lived third connection and calls
 /// `pg_cancel_backend` on the query connection's backend.
-class PostgresDriver implements DatabaseDriver {
+class PostgresDriver implements SqlDriver {
   PostgresDriver(this.config);
 
   @override
   final ConnectionConfig config;
+
+  @override
+  Set<SqlFeature> get features => SqlFeature.values.toSet();
 
   pg.Connection? _query;
   pg.Connection? _meta;

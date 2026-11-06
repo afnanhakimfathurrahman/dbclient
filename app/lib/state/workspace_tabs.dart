@@ -105,7 +105,7 @@ class InspectorTab extends WorkspaceTab {
 
   bool get previewLoaded => _preview != null || _previewError != null;
 
-  Future<void> loadPreview(DatabaseDriver driver, String sql) async {
+  Future<void> loadPreview(SqlDriver driver, String sql) async {
     if (_loading) return;
     _loading = true;
     _previewError = null;
@@ -126,12 +126,18 @@ class InspectorTab extends WorkspaceTab {
 
   /// Rows are edited by primary key, so only tables with one are editable.
   Future<void> _prepareEditing(
-    DatabaseDriver driver,
+    SqlDriver driver,
     QueryResult preview,
   ) async {
     _setEditor(null);
     if (!object.kind.isTable) {
       _readOnlyReason = '${object.kind.label}s are read-only here';
+      return;
+    }
+    if (!driver.features.contains(SqlFeature.rowEditing)) {
+      _readOnlyReason =
+          'Read-only: ${driver.config.engine.label} rows are changed with '
+          'SQL (e.g. ALTER TABLE … UPDATE)';
       return;
     }
     final List<ColumnInfo> columns;
@@ -211,7 +217,7 @@ class EditorTab extends WorkspaceTab {
     notifyListeners();
   }
 
-  DatabaseDriver? _runningOn;
+  SqlDriver? _runningOn;
 
   /// Text of the statement under the cursor, or the selection if any.
   String? currentStatement() {
@@ -231,7 +237,7 @@ class EditorTab extends WorkspaceTab {
 
   Future<void> run(
     List<String> statements,
-    DatabaseDriver driver,
+    SqlDriver driver,
     HistoryRepository history,
   ) async {
     if (_running || statements.isEmpty) return;

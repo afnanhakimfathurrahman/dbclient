@@ -95,11 +95,18 @@ final driverProvider = Provider.family<DatabaseDriver?, String>(
       ref.watch(sessionsProvider.select((s) => s[connectionId]?.driver)),
 );
 
+/// The SQL driver for a connection, or null if not connected or not a
+/// relational engine. The metadata providers below use this.
+final sqlDriverProvider = Provider.family<SqlDriver?, String>((ref, id) {
+  final driver = ref.watch(driverProvider(id));
+  return driver is SqlDriver ? driver : null;
+});
+
 final schemasProvider = FutureProvider.family<List<String>, String>((
   ref,
   connectionId,
 ) async {
-  final driver = ref.watch(driverProvider(connectionId));
+  final driver = ref.watch(sqlDriverProvider(connectionId));
   if (driver == null) return const [];
   return driver.listSchemas();
 });
@@ -107,7 +114,7 @@ final schemasProvider = FutureProvider.family<List<String>, String>((
 final objectsProvider =
     FutureProvider.family<List<DbObject>, (String connectionId, String schema)>(
       (ref, key) async {
-        final driver = ref.watch(driverProvider(key.$1));
+        final driver = ref.watch(sqlDriverProvider(key.$1));
         if (driver == null) return const [];
         return driver.listObjects(key.$2);
       },
@@ -119,11 +126,11 @@ typedef RelationKey = (String connectionId, String schema, String object);
 /// Builds a provider that loads per-object metadata (columns, indexes…) with
 /// [load] while the connection is open.
 FutureProviderFamily<List<T>, RelationKey> _objectMetadata<T>(
-  Future<List<T>> Function(DatabaseDriver driver, String schema, String object)
+  Future<List<T>> Function(SqlDriver driver, String schema, String object)
   load,
 ) {
   return FutureProvider.family<List<T>, RelationKey>((ref, key) async {
-    final driver = ref.watch(driverProvider(key.$1));
+    final driver = ref.watch(sqlDriverProvider(key.$1));
     if (driver == null) return const [];
     return load(driver, key.$2, key.$3);
   });
@@ -142,7 +149,7 @@ final routinesProvider =
       List<RoutineInfo>,
       (String connectionId, String schema)
     >((ref, key) async {
-      final driver = ref.watch(driverProvider(key.$1));
+      final driver = ref.watch(sqlDriverProvider(key.$1));
       if (driver == null) return const [];
       return driver.listRoutines(key.$2);
     });
@@ -164,7 +171,7 @@ final ddlProvider = FutureProvider.family<String, RelationKey>((
   ref,
   key,
 ) async {
-  final driver = ref.watch(driverProvider(key.$1));
+  final driver = ref.watch(sqlDriverProvider(key.$1));
   if (driver == null) return '';
   return driver.ddl(key.$2, key.$3);
 });

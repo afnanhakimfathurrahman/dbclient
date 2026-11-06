@@ -1,16 +1,77 @@
-/// Engine-agnostic driver interface and shared models.
+/// Engine-agnostic driver interfaces and shared models.
 ///
-/// The UI only talks to [DatabaseDriver]; each engine (Postgres today,
-/// MySQL/SQLite/ClickHouse/Mongo later) provides its own implementation.
+/// Engines come in families with different models: relational engines
+/// implement [SqlDriver], document stores [DocumentDriver] and key-value
+/// stores [KeyValueDriver]. The UI picks views by [DatabaseEngine.family].
 library;
 
-enum DatabaseEngine {
-  postgres('PostgreSQL', 5432);
+/// How an engine models data; decides which views and drivers apply.
+enum EngineFamily {
+  relational('SQL'),
+  document('Document'),
+  keyValue('Key-value');
 
-  const DatabaseEngine(this.label, this.defaultPort);
+  const EngineFamily(this.label);
 
   final String label;
+}
+
+/// Every supported engine. Drivers are pure Dart and built in, so all of
+/// them are available without a download.
+enum DatabaseEngine {
+  postgres(
+    'PostgreSQL',
+    EngineFamily.relational,
+    defaultPort: 5432,
+    defaultDatabase: 'postgres',
+    defaultUsername: 'postgres',
+  ),
+  clickhouse(
+    'ClickHouse',
+    EngineFamily.relational,
+    defaultPort: 8123,
+    defaultTlsPort: 8443,
+    defaultDatabase: 'default',
+    defaultUsername: 'default',
+  ),
+  mongodb(
+    'MongoDB',
+    EngineFamily.document,
+    defaultPort: 27017,
+    defaultDatabase: 'admin',
+    usernameOptional: true,
+  ),
+  redis(
+    'Redis',
+    EngineFamily.keyValue,
+    defaultPort: 6379,
+    defaultDatabase: '0',
+    usernameOptional: true,
+  );
+
+  const DatabaseEngine(
+    this.label,
+    this.family, {
+    required this.defaultPort,
+    this._defaultTlsPort,
+    required this.defaultDatabase,
+    this.defaultUsername = '',
+    this.usernameOptional = false,
+  });
+
+  final String label;
+  final EngineFamily family;
   final int defaultPort;
+  final int? _defaultTlsPort;
+  final String defaultDatabase;
+  final String defaultUsername;
+
+  /// Mongo and Redis often run without authentication.
+  final bool usernameOptional;
+
+  /// Some engines use a different port with TLS (ClickHouse HTTPS: 8443).
+  int portFor({required bool tls}) =>
+      tls ? (_defaultTlsPort ?? defaultPort) : defaultPort;
 }
 
 enum TlsMode {
@@ -37,6 +98,7 @@ class ConnectionConfig {
     required this.tlsMode,
     required this.color,
     required this.savePassword,
+    this.options = const {},
   });
 
   final String id;
@@ -52,7 +114,19 @@ class ConnectionConfig {
   final int color;
   final bool savePassword;
 
-  String get displayAddress => '$username@$host:$port/$database';
+  /// Engine-specific settings that have no column of their own, e.g. for
+  /// MongoDB: `srv`, `authSource`, `params`. Never holds secrets.
+  final Map<String, String> options;
+
+  String get displayAddress {
+    final user = username.isEmpty ? '' : '$username@';
+    return switch (engine) {
+      DatabaseEngine.redis => '$user$host:$port/db$database',
+      DatabaseEngine.mongodb when options['srv'] == 'true' =>
+        '$user$host/$database',
+      _ => '$user$host:$port/$database',
+    };
+  }
 
   ConnectionConfig copyWith({
     String? name,
@@ -64,6 +138,7 @@ class ConnectionConfig {
     TlsMode? tlsMode,
     int? color,
     bool? savePassword,
+    Map<String, String>? options,
   }) {
     return ConnectionConfig(
       id: id,
@@ -76,6 +151,7 @@ class ConnectionConfig {
       tlsMode: tlsMode ?? this.tlsMode,
       color: color ?? this.color,
       savePassword: savePassword ?? this.savePassword,
+      options: options ?? this.options,
     );
   }
 }
@@ -272,12 +348,43 @@ class DriverException implements Exception {
   }
 }
 
+/// Connection lifecycle shared by every engine. Each family adds its own
+/// operations: [SqlDriver], [DocumentDriver] or [KeyValueDriver].
 abstract class DatabaseDriver {
   ConnectionConfig get config;
 
   Future<void> connect(String? password);
   Future<void> close();
   Future<Duration> ping();
+
+  /// Cancels the operation currently running, if any.
+  Future<void> cancel();
+}
+
+/// Optional parts of the relational model. The navigator and inspector show
+/// only what an engine supports.
+enum SqlFeature {
+  constraints,
+  foreignKeys,
+  indexes,
+  triggers,
+  partitions,
+  routines,
+  sequences,
+
+  /// Add/edit/drop columns, constraints, indexes and triggers from the
+  /// inspector. The dialogs generate PostgreSQL syntax.
+  schemaEditing,
+
+  /// Editing table rows in the Data tab (needs primary keys and UPDATE).
+  rowEditing,
+
+  /// [SqlDriver.executeAll] is atomic.
+  transactions,
+}
+
+abstract class SqlDriver extends DatabaseDriver {
+  Set<SqlFeature> get features;
 
   Future<List<String>> listSchemas();
   Future<List<DbObject>> listObjects(String schema);
@@ -303,9 +410,7 @@ abstract class DatabaseDriver {
   Future<QueryResult> execute(String sql, {int maxRows = 10000});
 
   /// Runs [statements] in one transaction: either all of them take effect
-  /// or, if any fails, none do. Used for schema changes.
+  /// or, if any fails, none do. Without [SqlFeature.transactions] they run
+  /// in order and stop at the first failure.
   Future<void> executeAll(List<String> statements);
-
-  /// Cancels the statement currently running in [execute], if any.
-  Future<void> cancel();
 }

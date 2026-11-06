@@ -16,6 +16,9 @@ class Connections extends Table {
   TextColumn get tlsMode => text()();
   IntColumn get color => integer()();
   BoolColumn get savePassword => boolean().withDefault(const Constant(true))();
+
+  /// JSON object of engine-specific settings (no secrets); null if none.
+  TextColumn get options => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 
   @override
@@ -40,10 +43,13 @@ class AppDatabase extends _$AppDatabase {
     : super(executor ?? driftDatabase(name: 'db_client'));
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
+    onUpgrade: (m, from, to) async {
+      if (from < 2) await m.addColumn(connections, connections.options);
+    },
     beforeOpen: (details) async {
       await customStatement('PRAGMA foreign_keys = ON');
     },
