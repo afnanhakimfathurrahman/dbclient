@@ -1,5 +1,8 @@
-# Builds the desktop apps and publishes them as a GitHub release.
+# Builds the desktop apps and publishes them as a release of the public
+# kamaludin68/db-client-releases repo, which also hosts the website.
 # Run it by pushing a version tag:  git tag v0.1.0 && git push origin v0.1.0
+# Needs a RELEASES_TOKEN secret: a fine-grained token with "Contents: read
+# and write" on db-client-releases.
 # Asset names carry no version, so the site can link to
 # releases/latest/download/<name>.
 name: Release
@@ -120,6 +123,8 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          repository: kamaludin68/db-client-releases
+          token: ${{ secrets.RELEASES_TOKEN }}
+          name: DB Client ${{ github.ref_name }}
           files: dist/*
-          generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
