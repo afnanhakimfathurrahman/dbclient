@@ -245,9 +245,35 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
         ...switch (config.engine.family) {
           EngineFamily.relational => _schemaNodes(config),
           EngineFamily.document => _documentNodes(config),
-          EngineFamily.keyValue => const <Widget>[],
+          EngineFamily.keyValue => _redisNodes(config),
         },
     ];
+  }
+
+  /// Redis: numbered databases with key counts; empty ones are dimmed.
+  List<Widget> _redisNodes(ConnectionConfig config) {
+    final databases = ref.watch(redisDatabasesProvider(config.id));
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+    return databases.when(
+      loading: () => [const _Loading(depth: 1)],
+      error: (e, _) => [_ErrorRow(depth: 1, error: e)],
+      data: (list) => [
+        for (final (db, keys) in list)
+          _TreeRow(
+            depth: 1,
+            leading: Icon(
+              Icons.storage_rounded,
+              size: 16,
+              color: keys == 0 ? muted.withValues(alpha: 0.5) : null,
+            ),
+            label: 'db$db',
+            detail: keys == 0 ? null : '$keys keys',
+            onTap: () => ref
+                .read(workspaceTabsProvider.notifier)
+                .openRedis(config.id, db),
+          ),
+      ],
+    );
   }
 
   /// MongoDB: databases, then their collections and views.
