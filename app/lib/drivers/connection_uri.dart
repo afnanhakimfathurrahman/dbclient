@@ -30,6 +30,8 @@ class ParsedConnectionUri {
 const _schemes = {
   'postgres': DatabaseEngine.postgres,
   'postgresql': DatabaseEngine.postgres,
+  'mysql': DatabaseEngine.mysql,
+  'mariadb': DatabaseEngine.mysql,
   'clickhouse': DatabaseEngine.clickhouse,
   'mongodb': DatabaseEngine.mongodb,
   'mongodb+srv': DatabaseEngine.mongodb,
@@ -93,6 +95,13 @@ ParsedConnectionUri parseConnectionUri(String text) {
         null => null,
         'disable' || 'allow' || 'prefer' => TlsMode.disable,
         'verify-ca' || 'verify-full' => TlsMode.verifyFull,
+        _ => TlsMode.require,
+      };
+    case DatabaseEngine.mysql:
+      tls = switch ((query['ssl-mode'] ?? query['sslmode'])?.toLowerCase()) {
+        null => null,
+        'disabled' || 'disable' => TlsMode.disable,
+        'verify_identity' || 'verify_ca' || 'verify-full' => TlsMode.verifyFull,
         _ => TlsMode.require,
       };
     case DatabaseEngine.clickhouse:

@@ -171,6 +171,7 @@ class InspectorTab extends WorkspaceTab {
         columns: preview.columns,
         baseRows: preview.rows,
         keyColumns: keyColumns,
+        dialect: driver.dialect,
       ),
     );
   }

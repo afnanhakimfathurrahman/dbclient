@@ -5,6 +5,8 @@
 /// stores [KeyValueDriver]. The UI picks views by [DatabaseEngine.family].
 library;
 
+import 'sql_dialect.dart';
+
 /// How an engine models data; decides which views and drivers apply.
 enum EngineFamily {
   relational('SQL'),
@@ -25,6 +27,14 @@ enum DatabaseEngine {
     defaultPort: 5432,
     defaultDatabase: 'postgres',
     defaultUsername: 'postgres',
+  ),
+  mysql(
+    'MySQL',
+    EngineFamily.relational,
+    defaultPort: 3306,
+    defaultDatabase: '',
+    defaultUsername: 'root',
+    databaseOptional: true,
   ),
   clickhouse(
     'ClickHouse',
@@ -57,6 +67,7 @@ enum DatabaseEngine {
     required this.defaultDatabase,
     this.defaultUsername = '',
     this.usernameOptional = false,
+    this.databaseOptional = false,
   });
 
   final String label;
@@ -68,6 +79,9 @@ enum DatabaseEngine {
 
   /// Mongo and Redis often run without authentication.
   final bool usernameOptional;
+
+  /// MySQL can connect without choosing a database.
+  final bool databaseOptional;
 
   /// Some engines use a different port with TLS (ClickHouse HTTPS: 8443).
   int portFor({required bool tls}) =>
@@ -124,7 +138,7 @@ class ConnectionConfig {
       DatabaseEngine.redis => '$user$host:$port/db$database',
       DatabaseEngine.mongodb when options['srv'] == 'true' =>
         '$user$host/$database',
-      _ => '$user$host:$port/$database',
+      _ => '$user$host:$port${database.isEmpty ? '' : '/$database'}',
     };
   }
 
@@ -254,6 +268,7 @@ class RoutineInfo {
     required this.arguments,
     required this.kind,
     this.returnType,
+    this.schema = '',
   });
 
   /// Engine-specific identifier used to fetch the definition.
@@ -262,6 +277,9 @@ class RoutineInfo {
   final String arguments;
   final RoutineKind kind;
   final String? returnType;
+
+  /// Set by engines that look routines up by name (MySQL).
+  final String schema;
 }
 
 class DbObject {
@@ -385,6 +403,9 @@ enum SqlFeature {
 
 abstract class SqlDriver extends DatabaseDriver {
   Set<SqlFeature> get features;
+
+  /// Quoting and literals for SQL the app generates.
+  SqlDialect get dialect;
 
   Future<List<String>> listSchemas();
   Future<List<DbObject>> listObjects(String schema);

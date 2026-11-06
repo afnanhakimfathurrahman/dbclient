@@ -7,7 +7,7 @@ import 'package:http/io_client.dart';
 import 'package:uuid/uuid.dart';
 
 import '../driver.dart';
-import '../postgres/postgres_sql.dart' show qualifiedName;
+import '../sql_dialect.dart';
 
 /// ClickHouse over its HTTP interface (port 8123, or 8443 with TLS).
 ///
@@ -22,6 +22,9 @@ class ClickHouseDriver implements SqlDriver {
 
   @override
   Set<SqlFeature> get features => const {SqlFeature.indexes};
+
+  @override
+  SqlDialect get dialect => const ClickHouseDialect();
 
   static const _format = 'JSONCompactEachRowWithNamesAndTypes';
 
@@ -327,7 +330,7 @@ class ClickHouseDriver implements SqlDriver {
   @override
   Future<String> ddl(String schema, String object) async {
     final result = await _query(
-      'SHOW CREATE TABLE ${qualifiedName(schema, object)}',
+      'SHOW CREATE TABLE ${dialect.qualifiedName(schema, object)}',
     );
     final text = result.rows.firstOrNull?.firstOrNull as String? ?? '';
     return text.trimRight().endsWith(';') ? text : '$text;';

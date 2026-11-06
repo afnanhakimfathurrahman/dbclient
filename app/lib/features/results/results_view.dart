@@ -63,7 +63,8 @@ class ResultsView extends StatelessWidget {
             _ => const SizedBox.shrink(),
           },
         ),
-        if (outcome.result case final result?) _StatusBar(result: result),
+        if (outcome.result case final result?)
+          _StatusBar(result: result, connectionId: tab.connectionId),
       ],
     );
   }
@@ -136,9 +137,10 @@ class _OutcomeBar extends StatelessWidget {
 }
 
 class _StatusBar extends StatelessWidget {
-  const _StatusBar({required this.result});
+  const _StatusBar({required this.result, required this.connectionId});
 
   final QueryResult result;
+  final String connectionId;
 
   void _quickExport(BuildContext context, ExportFormat format) {
     final text = ResultExporter.export(result, format);
@@ -332,6 +334,7 @@ class _StatusBar extends StatelessWidget {
                 onTap: () => showExportDialog(
                   context,
                   result: result,
+                  connectionId: connectionId,
                   fileName: 'query_result',
                 ),
                 child: Padding(

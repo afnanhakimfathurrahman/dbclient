@@ -4,12 +4,15 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart' hide XFile;
 import 'package:share_plus/share_plus.dart' as share show XFile;
 
 import '../../app/theme.dart';
 import '../../drivers/driver.dart';
 import '../../drivers/export.dart';
+import '../../drivers/sql_dialect.dart';
+import '../../state/providers.dart';
 
 /// Shows an export dialog with format selection, live preview, copy and
 /// save to file (share sheet on mobile).
@@ -20,12 +23,22 @@ Future<void> showExportDialog(
   BuildContext context, {
   required QueryResult result,
   String? defaultTableName,
+  String? connectionId,
   String fileName = 'export',
 }) {
+  // SQL INSERTs are written in the connection's dialect.
+  final dialect = connectionId == null
+      ? postgresDialect
+      : ProviderScope.containerOf(
+              context,
+              listen: false,
+            ).read(sqlDriverProvider(connectionId))?.dialect ??
+            postgresDialect;
   return showDialog<void>(
     context: context,
     builder: (_) => _ExportDialog(
       result: result,
+      dialect: dialect,
       tableName: defaultTableName ?? 'exported_data',
       fileName: fileName,
     ),
@@ -76,12 +89,14 @@ Future<String?> saveExport(
 class _ExportDialog extends StatefulWidget {
   const _ExportDialog({
     required this.result,
+    required this.dialect,
     required this.tableName,
     required this.fileName,
   });
 
   final QueryResult result;
   final String tableName;
+  final SqlDialect dialect;
   final String fileName;
 
   @override
@@ -112,6 +127,7 @@ class _ExportDialogState extends State<_ExportDialog> {
         widget.result,
         _selectedFormat,
         tableName: key.$2.isEmpty ? widget.tableName : key.$2,
+        dialect: widget.dialect,
       );
       final lines = const LineSplitter().convert(_cachedText);
       _previewTruncated = lines.length > _previewLines;
@@ -173,12 +189,18 @@ class _ExportDialogState extends State<_ExportDialog> {
               color: scheme.primary.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(6),
             ),
-            child: Icon(Icons.file_download_outlined,
-                size: 18, color: scheme.primary),
+            child: Icon(
+              Icons.file_download_outlined,
+              size: 18,
+              color: scheme.primary,
+            ),
           ),
           const SizedBox(width: 10),
           const Flexible(
-            child: Text('Export Query Results', overflow: TextOverflow.ellipsis),
+            child: Text(
+              'Export Query Results',
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
           const Spacer(),
           Container(
@@ -208,7 +230,10 @@ class _ExportDialogState extends State<_ExportDialog> {
           children: [
             if (widget.result.truncated) ...[
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.amber.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(6),
@@ -218,14 +243,20 @@ class _ExportDialogState extends State<_ExportDialog> {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.warning_amber_rounded,
-                        size: 15, color: Colors.amber.shade700),
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      size: 15,
+                      color: Colors.amber.shade700,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         'Only the $rowCount fetched rows are exported; the '
                         'query returned more.',
-                        style: TextStyle(fontSize: 11.5, color: scheme.onSurface),
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: scheme.onSurface,
+                        ),
                       ),
                     ),
                   ],
@@ -352,10 +383,10 @@ class _ExportDialogState extends State<_ExportDialog> {
   }
 
   IconData _formatIcon(ExportFormat format) => switch (format) {
-        ExportFormat.csv => Icons.table_chart_outlined,
-        ExportFormat.json => Icons.data_object_rounded,
-        ExportFormat.markdown => Icons.text_snippet_outlined,
-        ExportFormat.tsv => Icons.border_all_rounded,
-        ExportFormat.sql => Icons.code_rounded,
-      };
+    ExportFormat.csv => Icons.table_chart_outlined,
+    ExportFormat.json => Icons.data_object_rounded,
+    ExportFormat.markdown => Icons.text_snippet_outlined,
+    ExportFormat.tsv => Icons.border_all_rounded,
+    ExportFormat.sql => Icons.code_rounded,
+  };
 }
