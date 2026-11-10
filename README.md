@@ -121,14 +121,26 @@ See [`app/README.md`](app/README.md) for tests and platform notes, and
 
 This repository is private. Builds and the website are published from the
 public [db-client-releases](https://github.com/kamaludin68/db-client-releases)
-repo. Pushing a version tag here builds Windows, macOS and Linux on GitHub
-Actions and publishes them as a release there (needs the `RELEASES_TOKEN`
-secret, see `.github/workflows/release.yml`):
+repo.
 
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
+- **CI** (`.github/workflows/ci.yml`): analyzer and tests on every push to
+  `main` and every pull request.
+- **Release** (`.github/workflows/release.yml`): builds Windows (installer
+  and zip), macOS, Linux and Android, then publishes them as a release of
+  db-client-releases. Set `version:` in `app/pubspec.yaml`, commit, and push
+  a matching tag:
+
+  ```sh
+  git tag v0.2.0
+  git push origin v0.2.0
+  ```
+
+  Actions → Release → **Run workflow** builds everything without
+  publishing (the files are kept as the run's artifacts). The secrets it
+  needs are listed at the top of the workflow.
+
+Without GitHub Actions, `scripts/build-release.ps1` builds Windows, Linux
+and Android locally into `binary/`.
 
 The website is `index.html` in db-client-releases, served by GitHub Pages
 from its `main` branch.

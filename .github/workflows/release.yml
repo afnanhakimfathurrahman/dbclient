@@ -1,8 +1,18 @@
-# Builds the desktop apps and publishes them as a release of the public
+# Builds every platform and publishes a release of the public
 # kamaludin68/db-client-releases repo, which also hosts the website.
-# Run it by pushing a version tag:  git tag v0.1.0 && git push origin v0.1.0
-# Needs a RELEASES_TOKEN secret: a fine-grained token with "Contents: read
-# and write" on db-client-releases.
+#
+#   Release:  bump `version:` in app/pubspec.yaml, commit, then
+#             git tag v0.2.0 && git push origin v0.2.0
+#   Test run: Actions → Release → Run workflow. Builds everything and keeps
+#             the files as workflow artifacts; nothing is published.
+#
+# Secrets (repo Settings → Secrets and variables → Actions):
+#   RELEASES_TOKEN             fine-grained token, "Contents: read and write"
+#                              on db-client-releases
+#   ANDROID_KEYSTORE_BASE64    the release keystore (.jks), base64-encoded
+#   ANDROID_KEYSTORE_PASSWORD  its store and key password
+#   ANDROID_KEY_ALIAS          its key alias
+#
 # Asset names carry no version, so the site can link to
 # releases/latest/download/<name>.
 name: Release
@@ -10,9 +20,10 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
-permissions:
-  contents: write
+concurrency:
+  group: release-${{ github.ref }}
 
 env:
   FLUTTER_VERSION: '3.47.9'
@@ -24,8 +35,19 @@ defaults:
 jobs:
   test:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - name: Version
+        id: version
+        run: |
+          version=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' pubspec.yaml)
+          if [[ "$GITHUB_REF_TYPE" == tag && "${GITHUB_REF_NAME#v}" != "$version"* ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $version in pubspec.yaml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -46,7 +68,7 @@ jobs:
           channel: stable
           cache: true
       - run: flutter build windows --release
-      - name: Package
+      - name: Package zip
         shell: pwsh
         run: |
           $out = 'dist/DB Client'
@@ -61,8 +83,8 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup --no-progress -y
-          $version = '${{ github.ref_name }}'.TrimStart('v')
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" windows\installer\db-client.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=${{ needs.test.outputs.version }}" windows\installer\db-client.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item build/installer/db-client-windows-x64-setup.exe dist/
       - uses: actions/upload-artifact@v4
         with:
@@ -97,15 +119,19 @@ jobs:
   linux:
     needs: test
     runs-on: ubuntu-latest
+    # Built on Ubuntu 22.04, so it also runs on older distributions.
+    container: ubuntu:22.04
     steps:
-      - uses: actions/checkout@v4
       - name: Build dependencies
-        working-directory: .
+        working-directory: /
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libstdc++-12-dev \
-            libsecret-1-dev
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            git curl unzip xz-utils zip ca-certificates \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            libstdc++-12-dev libsecret-1-dev >/dev/null
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory '*'
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -117,13 +143,61 @@ jobs:
           mkdir -p dist
           cp -r build/linux/x64/release/bundle dist/db-client
           tar -czf dist/db-client-linux-x64.tar.gz -C dist db-client
+          if ldd dist/db-client/db_client | grep "not found"; then exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: linux
           path: app/dist/db-client-linux-x64.tar.gz
 
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Signing key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [[ -z "$KEYSTORE" ]]; then
+            # Releases must keep one key, or installed apps can't update.
+            if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not set"; exit 1
+            fi
+            echo "::warning::No release key; the APK is signed with a debug key"
+            exit 0
+          fi
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          cat > android/key.properties <<EOF
+          storeFile=$RUNNER_TEMP/release.jks
+          storePassword=$PASSWORD
+          keyPassword=$PASSWORD
+          keyAlias=$ALIAS
+          EOF
+      - run: flutter build apk --release
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk dist/db-client-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: app/dist/db-client-android.apk
+
   release:
-    needs: [windows, macos, linux]
+    # Only tag pushes publish; manual runs just keep the artifacts.
+    if: github.ref_type == 'tag'
+    needs: [test, windows, macos, linux, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -134,6 +208,8 @@ jobs:
         with:
           repository: kamaludin68/db-client-releases
           token: ${{ secrets.RELEASES_TOKEN }}
-          name: DB Client ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          name: DB Client ${{ needs.test.outputs.version }}
           files: dist/*
           prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
