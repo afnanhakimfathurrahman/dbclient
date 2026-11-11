@@ -1,5 +1,5 @@
-# Builds every platform and publishes a release of the public
-# kamaludin68/db-client-releases repo, which also hosts the website.
+# Builds every platform and publishes a release of this repo; the website
+# in docs/ links to it.
 #
 #   Release:  bump `version:` in app/pubspec.yaml, commit, then
 #             git tag v0.2.0 && git push origin v0.2.0
@@ -7,8 +7,6 @@
 #             the files as workflow artifacts; nothing is published.
 #
 # Secrets (repo Settings → Secrets and variables → Actions):
-#   RELEASES_TOKEN             fine-grained token, "Contents: read and write"
-#                              on db-client-releases
 #   ANDROID_KEYSTORE_BASE64    the release keystore (.jks), base64-encoded
 #   ANDROID_KEYSTORE_PASSWORD  its store and key password
 #   ANDROID_KEY_ALIAS          its key alias
@@ -199,6 +197,8 @@ jobs:
     if: github.ref_type == 'tag'
     needs: [test, windows, macos, linux, android]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -206,8 +206,6 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          repository: kamaludin68/db-client-releases
-          token: ${{ secrets.RELEASES_TOKEN }}
           tag_name: ${{ github.ref_name }}
           name: DB Client ${{ needs.test.outputs.version }}
           files: dist/*

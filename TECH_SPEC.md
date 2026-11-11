@@ -4,7 +4,7 @@
 **Version**: 0.1.0 (pre-release, Flutter rewrite)
 **Platforms**: Windows, macOS, Linux, Android, iOS
 **Stack**: Flutter (Dart) — single codebase, no backend server
-**Repository**: [github.com/kamaludin68/db-client](https://github.com/kamaludin68/db-client)
+**Repository**: [github.com/afnanhakimfathurrahman/dbclient](https://github.com/afnanhakimfathurrahman/dbclient)
 **Website**: [`dbclient.is-my.app`](https://dbclient.is-my.app) — landing & download page
 
 ---

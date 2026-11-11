@@ -48,7 +48,7 @@ All drivers are built in. You can paste a connection URL (for example
 ## Install
 
 Download the file for your system from the
-[latest release](https://github.com/kamaludin68/db-client-releases/releases/latest).
+[latest release](https://github.com/afnanhakimfathurrahman/dbclient/releases/latest).
 ### Windows 10 / 11 (64-bit)
 
 1. Download `db-client-windows-x64-setup.exe` and run it. It installs for
@@ -88,7 +88,7 @@ iscc /DAppVersion=0.1.0 windows\installer\db-client.iss   # -> build\installer\
 sudo apt install libgtk-3-0 libsecret-1-0 libegl1 libgles2   # Debian / Ubuntu
 sudo dnf install gtk3 libsecret libglvnd-egl libglvnd-gles  # Fedora
 
-curl -LO https://github.com/kamaludin68/db-client-releases/releases/latest/download/db-client-linux-x64.tar.gz
+curl -LO https://github.com/afnanhakimfathurrahman/dbclient/releases/latest/download/db-client-linux-x64.tar.gz
 tar -xzf db-client-linux-x64.tar.gz -C ~/.local/share
 ~/.local/share/db-client/db_client
 ```
@@ -108,7 +108,7 @@ You need [Flutter](https://docs.flutter.dev/get-started/install) 3.47 or
 later and the desktop toolchain for your system.
 
 ```sh
-git clone https://github.com/kamaludin68/db-client.git
+git clone https://github.com/afnanhakimfathurrahman/dbclient.git
 cd db-client/app
 flutter pub get
 flutter run -d windows   # or macos, linux
@@ -119,15 +119,14 @@ See [`app/README.md`](app/README.md) for tests and platform notes, and
 
 ## Releases
 
-This repository is private. Builds and the website are published from the
-public [db-client-releases](https://github.com/kamaludin68/db-client-releases)
-repo.
+Builds are published as releases of this repo, and the website lives in
+[`docs/`](docs).
 
 - **CI** (`.github/workflows/ci.yml`): analyzer and tests on every push to
   `main` and every pull request.
 - **Release** (`.github/workflows/release.yml`): builds Windows (installer
-  and zip), macOS, Linux and Android, then publishes them as a release of
-  db-client-releases. Set `version:` in `app/pubspec.yaml`, commit, and push
+  and zip), macOS, Linux and Android, then publishes them as a release.
+  Set `version:` in `app/pubspec.yaml`, commit, and push
   a matching tag:
 
   ```sh
@@ -142,5 +141,5 @@ repo.
 Without GitHub Actions, `scripts/build-release.ps1` builds Windows, Linux
 and Android locally into `binary/`.
 
-The website is `index.html` in db-client-releases, served by GitHub Pages
-from its `main` branch.
+The website is `docs/index.html`, served by GitHub Pages from the `docs/`
+folder of `main`.
