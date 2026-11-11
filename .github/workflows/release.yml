@@ -125,7 +125,7 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            git curl unzip xz-utils zip ca-certificates \
+            git curl unzip xz-utils zip ca-certificates jq \
             clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
             libstdc++-12-dev libsecret-1-dev >/dev/null
       - uses: actions/checkout@v4
