@@ -9,6 +9,6 @@ coverage/
 !.env.example
 
 # Release builds (scripts/build-release.ps1); published as GitHub releases
-# on db-client-releases, never committed.
+# on GitHub, never committed.
 /binary/
 /db-client-windows-x64/
