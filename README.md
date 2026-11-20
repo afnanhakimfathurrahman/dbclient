@@ -26,11 +26,19 @@ native app, with no account, no cloud and no server in between.
   changes, then save them in one transaction or revert.
 - **Table inspector.** Data preview with an adjustable row limit (20 by
   default), columns, constraints, indexes, triggers and DDL.
+- **Filter table data.** Type a WHERE condition (and optionally ORDER BY)
+  above the grid, with column and keyword autocomplete, or right-click a
+  cell to filter by its value, without writing the full query.
 - **Schema editing.** Dialogs for columns, constraints, indexes and triggers
   that show the SQL before it runs (PostgreSQL).
 - **Export.** Results as CSV, TSV, JSON, Markdown or SQL INSERT statements.
 - **MongoDB.** A Compass-style document view with an expandable JSON tree;
   edit documents in mongosh syntax and only the changed fields are saved.
+- **MongoDB query editor.** Write native mongosh queries
+  (`db.users.find({…}).sort({…}).limit(20)`, `aggregate`, `countDocuments`,
+  `distinct`, inserts, updates, deletes, `runCommand`) with autocomplete for
+  collections, methods, operators and field names. New editors start from a
+  full query template.
 - **Redis.** Key browser for strings, hashes, lists, sets, sorted sets and
   streams, plus a command console.
 - **Private by design.** The app connects straight to your database.

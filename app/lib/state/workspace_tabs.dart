@@ -9,6 +9,7 @@ import '../drivers/document.dart';
 import '../drivers/driver.dart';
 import '../drivers/key_value.dart';
 import '../drivers/mongodb/mongo_json.dart';
+import '../drivers/mongodb/mongo_shell.dart';
 import '../drivers/redis/resp.dart';
 import '../drivers/sql_splitter.dart';
 import 'cancel_scope.dart';
@@ -122,6 +123,10 @@ class InspectorTab extends WorkspaceTab {
 
   /// How many rows the Data tab loads.
   int rowLimit;
+
+  /// The Data tab's WHERE condition (optionally with ORDER BY); empty for
+  /// the whole table. See [buildSelectSql].
+  String filter = '';
 
   @override
   String get title =>
@@ -571,6 +576,148 @@ class RedisTab extends WorkspaceTab {
   }
 }
 
+/// Outcome of one statement in a MongoDB editor run.
+class MongoOutcome {
+  const MongoOutcome(this.statement, {this.result, this.error});
+
+  final String statement;
+  final MongoShellResult? result;
+
+  /// A parse error ([FormatException] message) or a [DriverException].
+  final Object? error;
+}
+
+/// A MongoDB query editor for one database: mongosh-style statements
+/// (`db.users.find({…})`) and the results of the last run.
+class MongoEditorTab extends WorkspaceTab {
+  MongoEditorTab({
+    required this.title,
+    required this.connectionId,
+    required String database,
+    String initialText = '',
+    this.limit = 50,
+  }) : _database = database,
+       controller = CodeLineEditingController.fromText(initialText);
+
+  @override
+  final String title;
+  @override
+  final String connectionId;
+  final CodeLineEditingController controller;
+
+  /// Documents shown per cursor result, unless a statement asks for fewer.
+  int limit;
+
+  String _database;
+  String get database => _database;
+  set database(String value) {
+    if (value == _database) return;
+    _database = value;
+    notifyListeners();
+  }
+
+  bool _running = false;
+  @override
+  bool get busy => _running;
+
+  List<MongoOutcome> _outcomes = const [];
+  List<MongoOutcome> get outcomes => _outcomes;
+
+  int _selectedOutcome = 0;
+  int get selectedOutcome => _selectedOutcome;
+  set selectedOutcome(int value) {
+    _selectedOutcome = value;
+    notifyListeners();
+  }
+
+  /// The statement under the cursor, or the selection if any.
+  String? currentStatement() {
+    final selected = controller.selectedText;
+    if (selected.trim().isNotEmpty) return selected;
+    final text = controller.text;
+    return mongoStatementAt(text, _cursorOffset(text))?.text;
+  }
+
+  /// All statements in the selection, or in the whole script.
+  List<String> allStatements() {
+    final selected = controller.selectedText;
+    final source = selected.trim().isNotEmpty ? selected : controller.text;
+    return [for (final s in splitMongoScript(source)) s.text];
+  }
+
+  int _cursorOffset(String text) {
+    final position = controller.selection.extent;
+    final lines = text.split('\n');
+    var offset = 0;
+    for (var i = 0; i < position.index && i < lines.length; i++) {
+      offset += lines[i].length + 1;
+    }
+    return offset + position.offset;
+  }
+
+  /// Runs [statements] in order, stopping at the first error or on
+  /// [cancel]. [onAbandon] resets the connection if a cancelled statement
+  /// doesn't stop in time.
+  Future<void> run(
+    List<String> statements,
+    DocumentDriver driver, {
+    Future<void> Function()? onAbandon,
+  }) async {
+    if (_running || statements.isEmpty) return;
+    _running = true;
+    _outcomes = const [];
+    _selectedOutcome = 0;
+    notifyListeners();
+    final outcomes = <MongoOutcome>[];
+    try {
+      await _cancellable(
+        (scope) async {
+          for (final statement in statements) {
+            if (scope.cancelled) break;
+            try {
+              final result = await scope.guard(
+                runMongoStatement(driver, _database, statement, limit: limit),
+              );
+              if (result.database case final db?) _database = db;
+              outcomes.add(MongoOutcome(statement, result: result));
+            } on FormatException catch (e) {
+              outcomes.add(MongoOutcome(statement, error: e.message));
+              break;
+            } on DriverException catch (e) {
+              outcomes.add(MongoOutcome(statement, error: e));
+              break;
+            }
+            _outcomes = List.unmodifiable(outcomes);
+            notifyListeners();
+          }
+        },
+        stop: driver.cancel,
+        onAbandon: onAbandon,
+      );
+    } finally {
+      _outcomes = List.unmodifiable(outcomes);
+      final failed = outcomes.indexWhere((o) => o.error != null);
+      final withDocs = outcomes.lastIndexWhere(
+        (o) => o.result?.page.documents.isNotEmpty ?? false,
+      );
+      _selectedOutcome = failed != -1
+          ? failed
+          : (withDocs != -1 ? withDocs : outcomes.length - 1).clamp(
+              0,
+              outcomes.length,
+            );
+      _running = false;
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+}
+
 /// One SQL editor tab: its text, the connection it targets and the results
 /// of the last run.
 class EditorTab extends WorkspaceTab {
@@ -766,6 +913,26 @@ class WorkspaceTabsNotifier extends Notifier<WorkspaceTabsState> {
       title: 'Script-$_counter',
       connectionId: connectionId,
       initialText: initialText,
+    );
+    state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
+    return tab;
+  }
+
+  /// Opens a MongoDB query editor on [database], starting with
+  /// [initialText] (by default a template querying [collection]).
+  MongoEditorTab openMongoEditor(
+    String connectionId,
+    String database, {
+    String? collection,
+    String? initialText,
+  }) {
+    _counter++;
+    final tab = MongoEditorTab(
+      title: 'Query-$_counter',
+      connectionId: connectionId,
+      database: database,
+      initialText: initialText ?? mongoQueryTemplate(collection),
+      limit: ref.read(dataRowLimitProvider),
     );
     state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
     return tab;

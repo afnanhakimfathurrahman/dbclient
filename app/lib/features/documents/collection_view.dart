@@ -220,6 +220,22 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
             style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
           ),
           const Spacer(),
+          FilledButton.tonalIcon(
+            style: FilledButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            ),
+            icon: const Icon(Icons.terminal_rounded, size: 15),
+            label: const Text('Query editor', style: TextStyle(fontSize: 12)),
+            onPressed: () => ref
+                .read(workspaceTabsProvider.notifier)
+                .openMongoEditor(
+                  tab.connectionId,
+                  tab.database,
+                  collection: tab.collection,
+                ),
+          ),
+          const SizedBox(width: 4),
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh_rounded, size: 18),
@@ -472,7 +488,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
         separatorBuilder: (_, _) => const SizedBox(height: 10),
         itemBuilder: (context, i) {
           final doc = page.documents[i];
-          return _DocumentCard(
+          return DocumentCard(
             key: ObjectKey(doc),
             document: doc,
             onCopy: () => _copy(formatMongo(doc), 'Document'),
@@ -490,7 +506,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
       ),
       _DocView.table => ResultGrid(
         key: ObjectKey(page),
-        result: _tables[page] ??= _asTable(page),
+        result: _tables[page] ??= documentsTable(page),
       ),
       _DocView.json => SingleChildScrollView(
         padding: const EdgeInsets.all(14),
@@ -506,47 +522,47 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
   /// (pages are replaced, never changed in place).
   static final _tables = Expando<QueryResult>();
   static final _json = Expando<String>();
-
-  /// Top-level fields as columns (in order of first appearance), nested
-  /// values as one-line mongosh text.
-  static QueryResult _asTable(DocumentPage page) {
-    final names = <String>{for (final doc in page.documents) ...doc.keys}
-        .take(200)
-        .toList();
-    return QueryResult(
-      columns: [
-        for (final name in names)
-          ResultColumn(
-            name: name,
-            dataType: mongoTypeName(
-              page.documents
-                  .map((d) => d[name])
-                  .firstWhere((v) => v != null, orElse: () => null),
-            ),
-          ),
-      ],
-      rows: [
-        for (final doc in page.documents)
-          [
-            for (final name in names)
-              switch (doc[name]) {
-                null => null,
-                final String s => s,
-                final num n => n,
-                final bool b => b,
-                final v => formatMongoInline(v),
-              },
-          ],
-      ],
-      affectedRows: 0,
-      elapsed: page.elapsed,
-      truncated: page.hasMore,
-    );
-  }
 }
 
-class _DocumentCard extends StatelessWidget {
-  const _DocumentCard({
+/// Top-level fields as columns (in order of first appearance), nested
+/// values as one-line mongosh text.
+QueryResult documentsTable(DocumentPage page) {
+  final names = <String>{for (final doc in page.documents) ...doc.keys}
+      .take(200)
+      .toList();
+  return QueryResult(
+    columns: [
+      for (final name in names)
+        ResultColumn(
+          name: name,
+          dataType: mongoTypeName(
+            page.documents
+                .map((d) => d[name])
+                .firstWhere((v) => v != null, orElse: () => null),
+          ),
+        ),
+    ],
+    rows: [
+      for (final doc in page.documents)
+        [
+          for (final name in names)
+            switch (doc[name]) {
+              null => null,
+              final String s => s,
+              final num n => n,
+              final bool b => b,
+              final v => formatMongoInline(v),
+            },
+        ],
+    ],
+    affectedRows: 0,
+    elapsed: page.elapsed,
+    truncated: page.hasMore,
+  );
+}
+
+class DocumentCard extends StatelessWidget {
+  const DocumentCard({
     super.key,
     required this.document,
     required this.onCopy,

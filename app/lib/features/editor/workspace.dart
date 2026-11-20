@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:re_highlight/languages/pgsql.dart';
+import 'package:re_highlight/re_highlight.dart' show Mode;
 import 'package:re_highlight/styles/atom-one-dark.dart';
 import 'package:re_highlight/styles/atom-one-light.dart';
 
@@ -15,6 +16,7 @@ import '../ai/ask_ai_dialog.dart';
 import '../connections/connection_dialog.dart';
 import '../history/history_dialog.dart';
 import '../documents/collection_view.dart';
+import '../documents/mongo_editor_view.dart';
 import '../inspector/inspector_view.dart';
 import '../keyvalue/redis_view.dart';
 import '../results/results_view.dart';
@@ -43,6 +45,10 @@ class Workspace extends ConsumerWidget {
               tab: active,
             ),
             CollectionTab() => CollectionView(
+              key: ValueKey(active.id),
+              tab: active,
+            ),
+            MongoEditorTab() => MongoEditorView(
               key: ValueKey(active.id),
               tab: active,
             ),
@@ -196,6 +202,7 @@ class _TabChip extends StatelessWidget {
                           switch (tab) {
                             InspectorTab() => Icons.table_chart_rounded,
                             CollectionTab() => Icons.data_object_rounded,
+                            MongoEditorTab() => Icons.terminal_rounded,
                             RedisTab() => Icons.bolt_rounded,
                             EditorTab() => Icons.terminal_rounded,
                           },
@@ -705,7 +712,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
                       completion: _completion,
                     ),
                   ),
-                  _HorizontalSplitter(
+                  HorizontalSplitter(
                     onDragUpdate: (dy) => setState(() {
                       _editorFraction = ((editorHeight + dy) / available).clamp(
                         0.1,
@@ -724,16 +731,17 @@ class _EditorViewState extends ConsumerState<EditorView> {
   }
 }
 
-class _HorizontalSplitter extends StatefulWidget {
-  const _HorizontalSplitter({required this.onDragUpdate});
+/// Draggable divider between an editor and its results.
+class HorizontalSplitter extends StatefulWidget {
+  const HorizontalSplitter({super.key, required this.onDragUpdate});
 
   final ValueChanged<double> onDragUpdate;
 
   @override
-  State<_HorizontalSplitter> createState() => _HorizontalSplitterState();
+  State<HorizontalSplitter> createState() => _HorizontalSplitterState();
 }
 
-class _HorizontalSplitterState extends State<_HorizontalSplitter> {
+class _HorizontalSplitterState extends State<HorizontalSplitter> {
   bool _isHovered = false;
   bool _isDragging = false;
 
@@ -1001,10 +1009,16 @@ class SqlEditor extends StatelessWidget {
     required this.controller,
     this.readOnly = false,
     this.completion,
+    this.languageName = 'pgsql',
+    this.language,
   });
 
   final CodeLineEditingController controller;
   final bool readOnly;
+
+  /// Highlighting; PostgreSQL SQL when [language] is null.
+  final String languageName;
+  final Mode? language;
 
   /// Autocomplete source; none for read-only views.
   final CodeAutocompletePromptsBuilder? completion;
@@ -1030,7 +1044,9 @@ class SqlEditor extends StatelessWidget {
         fontFamilyFallback: monoFontFallback,
         backgroundColor: theme.colorScheme.surface,
         codeTheme: CodeHighlightTheme(
-          languages: {'pgsql': CodeHighlightThemeMode(mode: langPgsql)},
+          languages: {
+            languageName: CodeHighlightThemeMode(mode: language ?? langPgsql),
+          },
           theme: codeTheme,
         ),
       ),

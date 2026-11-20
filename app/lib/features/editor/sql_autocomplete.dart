@@ -74,13 +74,22 @@ class _SqlPrompt extends CodePrompt {
 class SqlPromptsBuilder implements CodeAutocompletePromptsBuilder {
   SqlPromptsBuilder({
     required this.controller,
-    required this.catalog,
-    required this.dialect,
-  });
+    required SqlCatalog Function() catalog,
+    required SqlDialect Function() dialect,
+  }) : complete = ((text, cursor) => completeSql(
+         text: text,
+         cursor: cursor,
+         catalog: catalog(),
+         dialect: dialect(),
+       ));
+
+  /// Completion from another source, e.g. the MongoDB editor's.
+  SqlPromptsBuilder.custom({required this.controller, required this.complete});
 
   final CodeLineEditingController controller;
-  final SqlCatalog Function() catalog;
-  final SqlDialect Function() dialect;
+
+  /// Completion at a cursor offset in the whole editor text.
+  final SqlCompletion? Function(String text, int cursor) complete;
 
   @override
   CodeAutocompleteEditingValue? build(
@@ -98,12 +107,7 @@ class SqlPromptsBuilder implements CodeAutocompletePromptsBuilder {
       }
       text.write(lines[i].text);
     }
-    final completion = completeSql(
-      text: text.toString(),
-      cursor: cursor,
-      catalog: catalog(),
-      dialect: dialect(),
-    );
+    final completion = complete(text.toString(), cursor);
     if (completion == null) return null;
     return CodeAutocompleteEditingValue(
       input: completion.input,

@@ -555,6 +555,13 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
           icon: const Icon(Icons.more_vert, size: 18),
           onSelected: (action) => switch (action) {
             'editor' => _openEditor(config),
+            // Like mongosh, without a database in the connection: "test".
+            'mongoEditor' => ref
+                .read(workspaceTabsProvider.notifier)
+                .openMongoEditor(
+                  config.id,
+                  config.database.isEmpty ? 'test' : config.database,
+                ),
             'connect' => _toggleConnection(config),
             'disconnect' => _disconnect(config),
             'refresh' => _refresh(config),
@@ -567,6 +574,11 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
               const PopupMenuItem(
                 value: 'editor',
                 child: Text('New SQL editor'),
+              ),
+            if (config.engine.family == EngineFamily.document)
+              const PopupMenuItem(
+                value: 'mongoEditor',
+                child: Text('New query editor'),
               ),
             if (session?.status == SessionStatus.connected) ...[
               const PopupMenuItem(value: 'refresh', child: Text('Refresh')),
@@ -647,6 +659,12 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
               onTap: () => _toggle('s:${config.id}:$database'),
               onContextMenu: _menuFor([
                 (
+                  'Open query editor',
+                  () async => ref
+                      .read(workspaceTabsProvider.notifier)
+                      .openMongoEditor(config.id, database),
+                ),
+                (
                   'Create collection…',
                   () => _createCollection(config, database),
                 ),
@@ -704,12 +722,24 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
                   ),
                   items: const [
                     PopupMenuItem(value: 'open', child: Text('Open')),
+                    PopupMenuItem(
+                      value: 'query',
+                      child: Text('Query in editor'),
+                    ),
                     PopupMenuItem(value: 'copy', child: Text('Copy name')),
                   ],
                 );
                 switch (action) {
                   case 'open':
                     open(info);
+                  case 'query':
+                    ref
+                        .read(workspaceTabsProvider.notifier)
+                        .openMongoEditor(
+                          config.id,
+                          database,
+                          collection: info.name,
+                        );
                   case 'copy':
                     await Clipboard.setData(ClipboardData(text: info.name));
                 }
