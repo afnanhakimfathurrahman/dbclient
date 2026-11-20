@@ -507,6 +507,24 @@ class _RunIntent extends Intent {
   final bool script;
 }
 
+class _CancelIntent extends Intent {
+  const _CancelIntent();
+}
+
+/// Esc cancels the running query; while idle the key passes through to the
+/// editor (e.g. to close autocomplete).
+class _CancelAction extends Action<_CancelIntent> {
+  _CancelAction(this.tab);
+
+  final EditorTab Function() tab;
+
+  @override
+  bool isEnabled(_CancelIntent intent) => tab().running;
+
+  @override
+  Object? invoke(_CancelIntent intent) => tab().cancel();
+}
+
 /// Toolbar, SQL editor and results for one tab.
 class EditorView extends ConsumerStatefulWidget {
   const EditorView({super.key, required this.tab});
@@ -548,7 +566,14 @@ class _EditorViewState extends ConsumerState<EditorView> {
     }
     final driver = await connectSqlWithPrompt(context, ref, config);
     if (driver == null) return;
-    await tab.run(statements, driver, ref.read(historyRepositoryProvider));
+    final sessions = ref.read(sessionsProvider.notifier);
+    await tab.run(
+      statements,
+      driver,
+      ref.read(historyRepositoryProvider),
+      // A statement that ignored the cancel still holds the connection.
+      onAbandon: () => sessions.disconnect(config.id),
+    );
   }
 
   /// Generates SQL from a description with the AI assistant and puts it
@@ -626,6 +651,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
         _RunIntent: CallbackAction<_RunIntent>(
           onInvoke: (intent) => _run(script: intent.script),
         ),
+        _CancelIntent: _CancelAction(() => tab),
       },
       child: Shortcuts(
         shortcuts: const {
@@ -642,6 +668,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
           SingleActivator(LogicalKeyboardKey.keyX, alt: true): _RunIntent(
             script: true,
           ),
+          SingleActivator(LogicalKeyboardKey.escape): _CancelIntent(),
         },
         child: ListenableBuilder(
           listenable: tab,
@@ -841,9 +868,17 @@ class _Toolbar extends ConsumerWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 visualDensity: VisualDensity.compact,
               ),
-              icon: const Icon(Icons.stop_rounded, size: 16),
-              label: const Text('Cancel', style: TextStyle(fontSize: 12)),
-              onPressed: tab.cancel,
+              icon: tab.cancelling
+                  ? const SizedBox.square(
+                      dimension: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.stop_rounded, size: 16),
+              label: Text(
+                tab.cancelling ? 'Cancelling…' : 'Cancel (Esc)',
+                style: const TextStyle(fontSize: 12),
+              ),
+              onPressed: tab.cancelling ? null : tab.cancel,
             ),
           ],
           const SizedBox(width: 8),

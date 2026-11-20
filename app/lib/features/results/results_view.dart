@@ -25,15 +25,21 @@ class ResultsView extends StatelessWidget {
     if (outcomes.isEmpty) {
       return _Placeholder(
         child: tab.running
-            ? const Row(
+            ? Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  SizedBox.square(
+                  const SizedBox.square(
                     dimension: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                  SizedBox(width: 12),
-                  Text('Running…'),
+                  const SizedBox(width: 12),
+                  Text(tab.cancelling ? 'Cancelling…' : 'Running…'),
+                  const SizedBox(width: 12),
+                  TextButton.icon(
+                    icon: const Icon(Icons.stop_rounded, size: 16),
+                    label: const Text('Cancel'),
+                    onPressed: tab.cancelling ? null : tab.cancel,
+                  ),
                 ],
               )
             : const Text('Run a query to see results here.'),
@@ -131,7 +137,7 @@ class _OutcomeBar extends StatelessWidget {
                 tooltip: o.sql,
               ),
             ),
-          if (tab.running)
+          if (tab.running) ...[
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: SizedBox.square(
@@ -139,6 +145,13 @@ class _OutcomeBar extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
+            IconButton(
+              tooltip: 'Cancel the script',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.stop_rounded, size: 16),
+              onPressed: tab.cancelling ? null : tab.cancel,
+            ),
+          ],
         ],
       ),
     );
