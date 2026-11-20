@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:db_client/data/repositories.dart';
 import 'package:db_client/drivers/driver.dart';
+import 'package:db_client/state/cancel_scope.dart';
 import 'package:db_client/state/workspace_tabs.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -46,7 +47,7 @@ void main() {
 
   setUp(() {
     tab = EditorTab(title: 't', connectionId: 'c');
-    EditorTab.cancelGrace = const Duration(milliseconds: 50);
+    CancelScope.grace = const Duration(milliseconds: 50);
   });
 
   tearDown(() => tab.dispose());
@@ -69,7 +70,9 @@ void main() {
     expect(tab.running, isFalse);
     expect(tab.cancelling, isFalse);
     expect(driver.executed, ['select pg_sleep(60)']);
-    expect(tab.outcomes.single.error?.code, '57014');
+    final error = tab.outcomes.single.error!;
+    expect(error.code, CancelScope.cancelledCode);
+    expect(error.detail, 'canceling statement due to user request');
     expect(abandoned, isFalse);
   });
 
@@ -90,7 +93,7 @@ void main() {
     await run;
 
     expect(tab.running, isFalse);
-    expect(tab.outcomes.single.error?.code, 'CANCELLED');
+    expect(tab.outcomes.single.error?.code, CancelScope.cancelledCode);
     expect(abandoned, isTrue);
   });
 

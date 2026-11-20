@@ -111,9 +111,23 @@ class MongoDriver implements DocumentDriver {
     return watch.elapsed;
   });
 
-  /// mongo_dart can't interrupt a running operation.
+  /// mongo_dart can't interrupt an operation, so this closes the
+  /// connections with operations in flight: they fail at once, the server
+  /// drops them with the client, and the next call reopens the connection.
   @override
-  Future<void> cancel() async {}
+  Future<void> cancel() async {
+    final busy = [
+      for (final name in _busy.keys)
+        if (_dbs.remove(name) case final db?) db,
+    ];
+    for (final db in busy) {
+      try {
+        await (await db).close();
+      } catch (_) {
+        // Already failed or closed.
+      }
+    }
+  }
 
   @override
   Future<List<String>> listDatabases() => _guard(() async {
