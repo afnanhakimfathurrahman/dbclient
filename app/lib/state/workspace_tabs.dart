@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show TextEditingController;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -536,6 +538,24 @@ class EditorTab extends WorkspaceTab {
 
   SqlDriver? _runningOn;
 
+  /// Cancel was pressed during the current run.
+  bool _cancelling = false;
+  bool get cancelling => _cancelling;
+
+  /// Completes with an error to stop waiting for a statement the server
+  /// didn't stop.
+  Completer<QueryResult>? _abandon;
+
+  /// Completes when the current run ends.
+  Completer<void>? _runEnded;
+
+  /// Called when a run is abandoned, to reset the connection it left busy.
+  Future<void> Function()? _onAbandon;
+
+  /// How long a cancelled statement gets to stop before it is abandoned.
+  @visibleForTesting
+  static Duration cancelGrace = const Duration(seconds: 5);
+
   /// Text of the statement under the cursor, or the selection if any.
   String? currentStatement() {
     final selected = controller.selectedText;
@@ -552,14 +572,22 @@ class EditorTab extends WorkspaceTab {
     return [for (final s in splitSql(source)) s.text];
   }
 
+  /// Runs [statements] in order, stopping at the first error or on
+  /// [cancel]. [onAbandon] resets the connection if a cancelled statement
+  /// doesn't stop in time.
   Future<void> run(
     List<String> statements,
     SqlDriver driver,
-    HistoryRepository history,
-  ) async {
+    HistoryRepository history, {
+    Future<void> Function()? onAbandon,
+  }) async {
     if (_running || statements.isEmpty) return;
     _running = true;
+    _cancelling = false;
     _runningOn = driver;
+    _onAbandon = onAbandon;
+    final abandon = _abandon = Completer<QueryResult>();
+    _runEnded = Completer<void>();
     _outcomes = const [];
     _selectedOutcome = 0;
     notifyListeners();
@@ -567,9 +595,13 @@ class EditorTab extends WorkspaceTab {
     final outcomes = <StatementOutcome>[];
     try {
       for (final sql in statements) {
+        if (_cancelling) break;
         final watch = Stopwatch()..start();
         try {
-          final result = await driver.execute(sql);
+          final result = await Future.any([
+            driver.execute(sql),
+            abandon.future,
+          ]);
           outcomes.add(StatementOutcome(sql, result: result));
           releaseOldRows(outcomes);
           await history.add(
@@ -607,7 +639,12 @@ class EditorTab extends WorkspaceTab {
               outcomes.length,
             );
       _running = false;
+      _cancelling = false;
       _runningOn = null;
+      _abandon = null;
+      _onAbandon = null;
+      _runEnded?.complete();
+      _runEnded = null;
       notifyListeners();
     }
   }
@@ -625,9 +662,46 @@ class EditorTab extends WorkspaceTab {
     }
   }
 
+  /// Asks the server to stop the running statement and skips the rest of
+  /// the script. If the statement hasn't stopped after [cancelGrace] (the
+  /// cancel failed or the network is gone), stops waiting for it and resets
+  /// the connection, so the tab never stays stuck.
   @override
   Future<void> cancel() async {
-    await _runningOn?.cancel();
+    final driver = _runningOn;
+    final ended = _runEnded;
+    final abandon = _abandon;
+    if (!_running || _cancelling || driver == null || ended == null) return;
+    _cancelling = true;
+    notifyListeners();
+    final onAbandon = _onAbandon;
+
+    final deadline = Stopwatch()..start();
+    try {
+      await driver.cancel().timeout(cancelGrace);
+    } catch (_) {
+      // Falls back to abandoning below.
+    }
+    try {
+      final left = cancelGrace - deadline.elapsed;
+      await ended.future.timeout(left.isNegative ? Duration.zero : left);
+      return;
+    } on TimeoutException {
+      // Still running: give up on it.
+    }
+    if (abandon == null || abandon.isCompleted) return;
+    abandon.completeError(
+      const DriverException(
+        'Query cancelled. The server did not stop it in time, so the '
+        'connection was reset.',
+        code: 'CANCELLED',
+      ),
+    );
+    try {
+      await onAbandon?.call();
+    } catch (_) {
+      // Already broken; the next run reconnects.
+    }
   }
 
   int _cursorOffset(String text) {
