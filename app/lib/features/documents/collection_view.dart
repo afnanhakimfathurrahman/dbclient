@@ -9,6 +9,7 @@ import '../../drivers/mongodb/document_diff.dart';
 import '../../drivers/mongodb/mongo_json.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
+import '../common/running_indicator.dart';
 import '../connections/connection_dialog.dart';
 import '../results/results_view.dart';
 import 'document_editor_dialog.dart';
@@ -65,7 +66,16 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
 
   Future<void> _run({bool reset = false}) async {
     final driver = await _driver();
-    if (driver != null) await tab.run(driver, resetSkip: reset);
+    if (driver != null) {
+      await tab.run(driver, resetSkip: reset, onAbandon: _resetConnection());
+    }
+  }
+
+  /// Resets the connection a cancelled query still holds.
+  Future<void> Function() _resetConnection() {
+    final sessions = ref.read(sessionsProvider.notifier);
+    final id = tab.connectionId;
+    return () => sessions.disconnect(id);
   }
 
   void _snack(String message) =>
@@ -80,7 +90,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
     if (driver == null) throw const DriverException('Not connected');
     await action(driver);
     tab.recount();
-    await tab.run(driver);
+    await tab.run(driver, onAbandon: _resetConnection());
   }
 
   Future<void> _insert({Map<String, dynamic>? template}) async {
@@ -292,11 +302,20 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
                         ),
                 ),
                 const SizedBox(width: 8),
-                FilledButton.icon(
-                  icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                  label: Text(find ? 'Find' : 'Run'),
-                  onPressed: tab.busy ? null : () => _run(reset: true),
-                ),
+                // While running, the button cancels, so a slow query can be
+                // stopped and changed.
+                if (tab.busy)
+                  FilledButton.tonalIcon(
+                    icon: const Icon(Icons.stop_rounded, size: 18),
+                    label: Text(tab.cancelling ? 'Cancelling…' : 'Cancel'),
+                    onPressed: tab.cancelling ? null : tab.cancel,
+                  )
+                else
+                  FilledButton.icon(
+                    icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                    label: Text(find ? 'Find' : 'Run'),
+                    onPressed: () => _run(reset: true),
+                  ),
               ],
             ),
             if (find) ...[
@@ -435,7 +454,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
     }
     if (page == null) {
       return tab.busy
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: RunningIndicator(tab: tab))
           : const SizedBox.shrink();
     }
     if (page.documents.isEmpty) {

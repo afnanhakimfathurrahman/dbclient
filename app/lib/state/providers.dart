@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show FutureProviderFamily;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,6 +12,7 @@ import '../drivers/document.dart';
 import '../drivers/driver.dart';
 import '../drivers/key_value.dart';
 import '../drivers/registry.dart';
+import 'cancel_scope.dart';
 import 'workspace_tabs.dart';
 
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
@@ -81,10 +84,29 @@ class SessionsNotifier extends Notifier<Map<String, Session>> {
     final connecting = Session(SessionStatus.connecting);
     state = {...state, config.id: connecting};
     final driver = createDriver(config);
+    final cancelled = _cancels[config.id] = Completer<void>();
+    final connect = driver.connect(password);
     try {
-      await driver.connect(password);
+      // [disconnect] can stop waiting: a slow or unreachable server
+      // shouldn't hold the user until the driver's own timeout.
+      await Future.any([
+        connect,
+        cancelled.future.then<void>(
+          (_) => throw const DriverException(
+            'Connection cancelled',
+            code: CancelScope.cancelledCode,
+          ),
+        ),
+      ]);
     } catch (e) {
-      await driver.close();
+      if (cancelled.isCompleted) {
+        // Close once the abandoned attempt settles.
+        unawaited(
+          connect.then((_) {}, onError: (_) {}).whenComplete(driver.close),
+        );
+      } else {
+        await driver.close();
+      }
       if (identical(state[config.id], connecting)) {
         state = {
           ...state,
@@ -92,6 +114,8 @@ class SessionsNotifier extends Notifier<Map<String, Session>> {
         };
       }
       rethrow;
+    } finally {
+      if (identical(_cancels[config.id], cancelled)) _cancels.remove(config.id);
     }
     if (!identical(state[config.id], connecting)) {
       // Disconnected meanwhile: don't bring the session back.
@@ -105,10 +129,18 @@ class SessionsNotifier extends Notifier<Map<String, Session>> {
     return driver;
   }
 
+  /// Connect attempts in flight, completed by [disconnect] to cancel them.
+  final _cancels = <String, Completer<void>>{};
+
+  bool isConnecting(String connectionId) =>
+      state[connectionId]?.status == SessionStatus.connecting;
+
   Future<void> disconnect(String connectionId) async {
     final session = state[connectionId];
     state = {...state}..remove(connectionId);
     _pending.remove(connectionId);
+    final cancel = _cancels.remove(connectionId);
+    if (cancel != null && !cancel.isCompleted) cancel.complete();
     await session?.driver?.close();
   }
 

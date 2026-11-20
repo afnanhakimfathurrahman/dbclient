@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show TextEditingController;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,6 +11,7 @@ import '../drivers/key_value.dart';
 import '../drivers/mongodb/mongo_json.dart';
 import '../drivers/redis/resp.dart';
 import '../drivers/sql_splitter.dart';
+import 'cancel_scope.dart';
 import 'data_editor.dart';
 import 'providers.dart';
 
@@ -60,7 +59,35 @@ sealed class WorkspaceTab extends ChangeNotifier {
   /// Shows a spinner on the tab while true.
   bool get busy;
 
-  Future<void> cancel() async {}
+  /// Operations [cancel] stops.
+  final _scopes = <CancelScope>{};
+
+  /// [cancel] was called and running operations are stopping.
+  bool get cancelling => _scopes.any((s) => s.cancelled);
+
+  /// Stops the tab's running operations.
+  Future<void> cancel() async {
+    if (_scopes.isEmpty) return;
+    final stopping = [for (final s in [..._scopes]) s.cancel()];
+    notifyListeners();
+    await Future.wait(stopping);
+  }
+
+  /// Runs [body] so that [cancel] can stop it; see [CancelScope].
+  Future<T> _cancellable<T>(
+    Future<T> Function(CancelScope scope) body, {
+    Future<void> Function()? stop,
+    Future<void> Function()? onAbandon,
+  }) async {
+    final scope = CancelScope(stop: stop, onAbandon: onAbandon);
+    _scopes.add(scope);
+    try {
+      return await body(scope);
+    } finally {
+      scope.end();
+      _scopes.remove(scope);
+    }
+  }
 
   bool _disposed = false;
 
@@ -137,7 +164,13 @@ class InspectorTab extends WorkspaceTab {
 
   bool get previewLoaded => _preview != null || _previewError != null;
 
-  Future<void> loadPreview(SqlDriver driver, String sql) async {
+  /// Loads the Data tab. [onAbandon] resets the connection if a cancelled
+  /// query doesn't stop in time.
+  Future<void> loadPreview(
+    SqlDriver driver,
+    String sql, {
+    Future<void> Function()? onAbandon,
+  }) async {
     if (_loading) return;
     _loading = true;
     _previewError = null;
@@ -146,7 +179,11 @@ class InspectorTab extends WorkspaceTab {
       // The SQL asks for one extra row to tell whether the table has more
       // than [rowLimit]. Fetching it whole and dropping it here, instead of
       // letting the row cap trip, saves the driver a server-side cancel.
-      var preview = await driver.execute(sql, maxRows: rowLimit + 1);
+      var preview = await _cancellable(
+        (scope) => scope.guard(driver.execute(sql, maxRows: rowLimit + 1)),
+        stop: driver.cancel,
+        onAbandon: onAbandon,
+      );
       if (preview.rows.length > rowLimit) {
         preview = QueryResult(
           columns: preview.columns,
@@ -277,46 +314,24 @@ class CollectionTab extends WorkspaceTab {
   void recount() => _countedFilter = null;
 
   /// Runs the current query. [resetSkip] starts again from the first page.
-  Future<void> run(DocumentDriver driver, {bool resetSkip = false}) async {
+  /// [onAbandon] resets the connection if a cancelled query doesn't stop
+  /// in time.
+  Future<void> run(
+    DocumentDriver driver, {
+    bool resetSkip = false,
+    Future<void> Function()? onAbandon,
+  }) async {
     if (_loading) return;
     if (resetSkip) skip = 0;
     _loading = true;
     _error = null;
     notifyListeners();
     try {
-      if (mode == DocumentQueryMode.find) {
-        final filterDoc = parseMongoDocument(filter.text, what: 'filter');
-        final page = await driver.find(
-          database,
-          collection,
-          filter: filterDoc,
-          projection: parseMongoDocument(projection.text, what: 'projection'),
-          sort: parseMongoDocument(sort.text, what: 'sort'),
-          skip: skip,
-          limit: limit,
-        );
-        _page = page;
-        // Counting can scan the collection, so paging through the same
-        // filter reuses the last count.
-        if (resetSkip || _total == null || _countedFilter != filter.text) {
-          _total = await driver.count(database, collection, filterDoc);
-          _countedFilter = filter.text;
-        }
-      } else {
-        final stages = parseMongo(pipeline.text);
-        if (stages is! List || stages.any((s) => s is! Map<String, dynamic>)) {
-          throw const FormatException(
-            'The pipeline must be an array of stages: [ { \$match: … } ]',
-          );
-        }
-        _page = await driver.aggregate(
-          database,
-          collection,
-          stages.cast<Map<String, dynamic>>(),
-          limit: limit,
-        );
-        _total = null;
-      }
+      await _cancellable(
+        (scope) => _query(driver, scope, resetSkip: resetSkip),
+        stop: driver.cancel,
+        onAbandon: onAbandon,
+      );
     } on FormatException catch (e) {
       _error = e.message;
     } on DriverException catch (e) {
@@ -324,6 +339,52 @@ class CollectionTab extends WorkspaceTab {
     } finally {
       _loading = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _query(
+    DocumentDriver driver,
+    CancelScope scope, {
+    required bool resetSkip,
+  }) async {
+    if (mode == DocumentQueryMode.find) {
+      final filterDoc = parseMongoDocument(filter.text, what: 'filter');
+      final page = await scope.guard(
+        driver.find(
+          database,
+          collection,
+          filter: filterDoc,
+          projection: parseMongoDocument(projection.text, what: 'projection'),
+          sort: parseMongoDocument(sort.text, what: 'sort'),
+          skip: skip,
+          limit: limit,
+        ),
+      );
+      _page = page;
+      // Counting can scan the collection, so paging through the same
+      // filter reuses the last count.
+      if (resetSkip || _total == null || _countedFilter != filter.text) {
+        _total = await scope.guard(
+          driver.count(database, collection, filterDoc),
+        );
+        _countedFilter = filter.text;
+      }
+    } else {
+      final stages = parseMongo(pipeline.text);
+      if (stages is! List || stages.any((s) => s is! Map<String, dynamic>)) {
+        throw const FormatException(
+          'The pipeline must be an array of stages: [ { \$match: … } ]',
+        );
+      }
+      _page = await scope.guard(
+        driver.aggregate(
+          database,
+          collection,
+          stages.cast<Map<String, dynamic>>(),
+          limit: limit,
+        ),
+      );
+      _total = null;
     }
   }
 
@@ -391,10 +452,16 @@ class RedisTab extends WorkspaceTab {
     scanError = null;
     notifyListeners();
     try {
-      final page = await driver.scan(
-        db,
-        pattern: pattern.text.trim(),
-        cursor: more ? _cursor : '0',
+      // Browser commands are short and their late replies harmless, so a
+      // cancel just stops waiting (no stop: nothing to reset).
+      final page = await _cancellable(
+        (scope) => scope.guard(
+          driver.scan(
+            db,
+            pattern: pattern.text.trim(),
+            cursor: more ? _cursor : '0',
+          ),
+        ),
       );
       keys = more ? [...keys, ...page.keys] : page.keys;
       _cursor = page.cursor;
@@ -420,7 +487,9 @@ class RedisTab extends WorkspaceTab {
     valueError = null;
     notifyListeners();
     try {
-      final data = await driver.read(db, key);
+      final data = await _cancellable(
+        (scope) => scope.guard(driver.read(db, key)),
+      );
       // Ignore a late reply after another key was selected.
       if (selectedKey == key) value = data;
     } on DriverException catch (e) {
@@ -487,8 +556,12 @@ class RedisTab extends WorkspaceTab {
     }
   }
 
+  /// Also aborts a console command by dropping its connection.
   @override
-  Future<void> cancel() async => _consoleDriver?.cancel();
+  Future<void> cancel() async {
+    final console = _consoleDriver;
+    await Future.wait([?console?.cancel(), super.cancel()]);
+  }
 
   @override
   void dispose() {
@@ -536,26 +609,6 @@ class EditorTab extends WorkspaceTab {
     notifyListeners();
   }
 
-  SqlDriver? _runningOn;
-
-  /// Cancel was pressed during the current run.
-  bool _cancelling = false;
-  bool get cancelling => _cancelling;
-
-  /// Completes with an error to stop waiting for a statement the server
-  /// didn't stop.
-  Completer<QueryResult>? _abandon;
-
-  /// Completes when the current run ends.
-  Completer<void>? _runEnded;
-
-  /// Called when a run is abandoned, to reset the connection it left busy.
-  Future<void> Function()? _onAbandon;
-
-  /// How long a cancelled statement gets to stop before it is abandoned.
-  @visibleForTesting
-  static Duration cancelGrace = const Duration(seconds: 5);
-
   /// Text of the statement under the cursor, or the selection if any.
   String? currentStatement() {
     final selected = controller.selectedText;
@@ -583,48 +636,17 @@ class EditorTab extends WorkspaceTab {
   }) async {
     if (_running || statements.isEmpty) return;
     _running = true;
-    _cancelling = false;
-    _runningOn = driver;
-    _onAbandon = onAbandon;
-    final abandon = _abandon = Completer<QueryResult>();
-    _runEnded = Completer<void>();
     _outcomes = const [];
     _selectedOutcome = 0;
     notifyListeners();
 
     final outcomes = <StatementOutcome>[];
     try {
-      for (final sql in statements) {
-        if (_cancelling) break;
-        final watch = Stopwatch()..start();
-        try {
-          final result = await Future.any([
-            driver.execute(sql),
-            abandon.future,
-          ]);
-          outcomes.add(StatementOutcome(sql, result: result));
-          releaseOldRows(outcomes);
-          await history.add(
-            connectionId: connectionId,
-            sql: sql,
-            duration: result.elapsed,
-            rowCount: result.hasResultSet
-                ? result.rows.length
-                : result.affectedRows,
-          );
-        } on DriverException catch (e) {
-          outcomes.add(StatementOutcome(sql, error: e));
-          await history.add(
-            connectionId: connectionId,
-            sql: sql,
-            duration: watch.elapsed,
-            error: e.message,
-          );
-          break; // Stop the script at the first failing statement.
-        }
-        _outcomes = List.unmodifiable(outcomes);
-        notifyListeners();
-      }
+      await _cancellable(
+        (scope) => _runStatements(statements, driver, history, scope, outcomes),
+        stop: driver.cancel,
+        onAbandon: onAbandon,
+      );
     } finally {
       _outcomes = List.unmodifiable(outcomes);
       // Show the last statement that produced rows; otherwise the last one.
@@ -639,12 +661,44 @@ class EditorTab extends WorkspaceTab {
               outcomes.length,
             );
       _running = false;
-      _cancelling = false;
-      _runningOn = null;
-      _abandon = null;
-      _onAbandon = null;
-      _runEnded?.complete();
-      _runEnded = null;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _runStatements(
+    List<String> statements,
+    SqlDriver driver,
+    HistoryRepository history,
+    CancelScope scope,
+    List<StatementOutcome> outcomes,
+  ) async {
+    for (final sql in statements) {
+      // A cancel between statements skips the rest of the script.
+      if (scope.cancelled) break;
+      final watch = Stopwatch()..start();
+      try {
+        final result = await scope.guard(driver.execute(sql));
+        outcomes.add(StatementOutcome(sql, result: result));
+        releaseOldRows(outcomes);
+        await history.add(
+          connectionId: connectionId,
+          sql: sql,
+          duration: result.elapsed,
+          rowCount: result.hasResultSet
+              ? result.rows.length
+              : result.affectedRows,
+        );
+      } on DriverException catch (e) {
+        outcomes.add(StatementOutcome(sql, error: e));
+        await history.add(
+          connectionId: connectionId,
+          sql: sql,
+          duration: watch.elapsed,
+          error: e.message,
+        );
+        break; // Stop the script at the first failing statement.
+      }
+      _outcomes = List.unmodifiable(outcomes);
       notifyListeners();
     }
   }
@@ -659,48 +713,6 @@ class EditorTab extends WorkspaceTab {
       final o = outcomes[i];
       if (o.rowsReleased || !(o.result?.hasResultSet ?? false)) continue;
       if (++kept > keptResultSets) outcomes[i] = o.released();
-    }
-  }
-
-  /// Asks the server to stop the running statement and skips the rest of
-  /// the script. If the statement hasn't stopped after [cancelGrace] (the
-  /// cancel failed or the network is gone), stops waiting for it and resets
-  /// the connection, so the tab never stays stuck.
-  @override
-  Future<void> cancel() async {
-    final driver = _runningOn;
-    final ended = _runEnded;
-    final abandon = _abandon;
-    if (!_running || _cancelling || driver == null || ended == null) return;
-    _cancelling = true;
-    notifyListeners();
-    final onAbandon = _onAbandon;
-
-    final deadline = Stopwatch()..start();
-    try {
-      await driver.cancel().timeout(cancelGrace);
-    } catch (_) {
-      // Falls back to abandoning below.
-    }
-    try {
-      final left = cancelGrace - deadline.elapsed;
-      await ended.future.timeout(left.isNegative ? Duration.zero : left);
-      return;
-    } on TimeoutException {
-      // Still running: give up on it.
-    }
-    if (abandon == null || abandon.isCompleted) return;
-    abandon.completeError(
-      const DriverException(
-        'Query cancelled. The server did not stop it in time, so the '
-        'connection was reset.',
-        code: 'CANCELLED',
-      ),
-    );
-    try {
-      await onAbandon?.call();
-    } catch (_) {
-      // Already broken; the next run reconnects.
     }
   }
 

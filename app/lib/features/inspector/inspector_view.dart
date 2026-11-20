@@ -15,6 +15,7 @@ import '../../drivers/value_format.dart';
 import '../../state/data_editor.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
+import '../common/running_indicator.dart';
 import '../connections/connection_dialog.dart';
 import '../editor/workspace.dart';
 import '../results/export_dialog.dart';
@@ -67,10 +68,13 @@ class InspectorView extends ConsumerWidget {
     if (config == null) return;
     final driver = await connectSqlWithPrompt(context, ref, config);
     if (driver != null) {
+      final sessions = ref.read(sessionsProvider.notifier);
       // One extra row tells whether the table has more than the limit.
       await tab.loadPreview(
         driver,
         _selectSql(driver.dialect, tab.rowLimit + 1),
+        // A query that ignored the cancel still holds the connection.
+        onAbandon: () => sessions.disconnect(config.id),
       );
     }
   }
@@ -817,7 +821,7 @@ class _DataPageState extends State<_DataPage> {
       builder: (context, _) {
         final preview = tab.preview;
         if (tab.busy && preview == null) {
-          return const Center(child: CircularProgressIndicator());
+          return Center(child: RunningIndicator(tab: tab));
         }
         if (tab.previewError case final error?) {
           return _CenteredMessage(error.toString(), isError: true);
@@ -829,7 +833,7 @@ class _DataPageState extends State<_DataPage> {
           children: [
             _toolbar(editor),
             const Divider(height: 1),
-            if (tab.busy) const LinearProgressIndicator(minHeight: 2),
+            if (tab.busy) RunningBar(tab: tab),
             Expanded(
               child: ResultGrid(
                 key: ObjectKey(preview),

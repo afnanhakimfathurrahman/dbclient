@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +10,7 @@ import '../../app/theme.dart';
 import '../../drivers/connection_uri.dart';
 import '../../drivers/driver.dart';
 import '../../drivers/registry.dart';
+import '../../state/cancel_scope.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
 
@@ -1152,14 +1155,39 @@ Future<DatabaseDriver?> connectWithPrompt(
     if (password == null) return null;
   }
 
+  // A slow connect gets a notice with Cancel; a quick one shows nothing.
+  final messenger = context.mounted ? ScaffoldMessenger.maybeOf(context) : null;
+  ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? notice;
+  final noticeTimer = Timer(const Duration(milliseconds: 600), () {
+    notice = messenger?.showSnackBar(
+      SnackBar(
+        content: Text('Connecting to ${config.name}…'),
+        duration: const Duration(minutes: 2),
+        action: SnackBarAction(
+          label: 'Cancel',
+          onPressed: () => sessions.disconnect(config.id),
+        ),
+      ),
+    );
+  });
   try {
     return await sessions.connect(config, password);
+  } on DriverException catch (e) {
+    // Cancelled by the user: nothing to report.
+    if (e.code != CancelScope.cancelledCode && context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('${config.name}: $e')));
+    }
+    return null;
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('${config.name}: $e')));
     }
     return null;
+  } finally {
+    noticeTimer.cancel();
+    notice?.close();
   }
 }
 

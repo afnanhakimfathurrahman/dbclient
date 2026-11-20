@@ -540,7 +540,12 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
       _TreeRow(
         depth: 0,
         expanded: expanded,
-        leading: _StatusDot(color: Color(config.color), session: session),
+        leading: _StatusDot(
+          color: Color(config.color),
+          session: session,
+          onCancel: () =>
+              ref.read(sessionsProvider.notifier).disconnect(config.id),
+        ),
         label: config.name,
         subtitle: '${config.engine.label} · ${config.displayAddress}',
         onTap: () => _toggleConnection(config),
@@ -1380,17 +1385,31 @@ class _TreeRow extends StatelessWidget {
 }
 
 class _StatusDot extends StatelessWidget {
-  const _StatusDot({required this.color, required this.session});
+  const _StatusDot({
+    required this.color,
+    required this.session,
+    required this.onCancel,
+  });
 
   final Color color;
   final Session? session;
 
+  /// Stops a connect in progress.
+  final VoidCallback onCancel;
+
   @override
   Widget build(BuildContext context) {
     if (session?.status == SessionStatus.connecting) {
-      return const SizedBox.square(
-        dimension: 12,
-        child: CircularProgressIndicator(strokeWidth: 2),
+      return Tooltip(
+        message: 'Connecting… click to cancel',
+        child: InkWell(
+          onTap: onCancel,
+          customBorder: const CircleBorder(),
+          child: const SizedBox.square(
+            dimension: 12,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
       );
     }
     final connected = session?.status == SessionStatus.connected;
