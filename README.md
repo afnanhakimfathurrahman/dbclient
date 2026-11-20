@@ -14,6 +14,12 @@ native app, with no account, no cloud and no server in between.
 - **SQL editor with autocomplete.** Suggests tables, columns, schemas and
   keywords from your live schema, resolves aliases, and quotes names
   correctly for each database. Ctrl+N (Cmd+N) opens a new editor.
+- **Ask AI.** Describe a query in plain words and get SQL for your schema,
+  or have the last error fixed. Bring your own provider: OpenAI, Anthropic,
+  Google Gemini, OpenRouter, Groq, DeepSeek, a local model with Ollama, or
+  any OpenAI-compatible server. Off until you set it up; only your request,
+  the current query and schema names are sent, never row data, and the SQL
+  is inserted for you to review, not run.
 - **Database navigator.** Schemas, tables, views, functions, sequences and
   more, in a tree grouped like DBeaver.
 - **Edit data in the grid.** Change cells, add and delete rows, review the
@@ -29,7 +35,7 @@ native app, with no account, no cloud and no server in between.
   streams, plus a command console.
 - **Private by design.** The app connects straight to your database.
   Passwords are kept in the system keychain (Keychain, Windows Credential
-  Locker, libsecret).
+  Locker, libsecret), and so are AI provider keys.
 - **Themes.** VS Code Dark, GitHub Dark, Dracula and VS Code Light.
 
 ## Supported databases

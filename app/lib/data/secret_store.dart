@@ -1,6 +1,6 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// Connection passwords in the OS secure store (Keychain, Keystore,
+/// Connection passwords and AI API keys in the OS secure store (Keychain, Keystore,
 /// Windows Credential Locker, libsecret).
 class SecretStore {
   SecretStore([FlutterSecureStorage? storage])
@@ -24,4 +24,15 @@ class SecretStore {
 
   Future<void> deletePassword(String connectionId) =>
       _storage.delete(key: _key(connectionId));
+
+  String _aiKey(String provider) => 'ai.$provider.apiKey';
+
+  Future<String?> readAiApiKey(String provider) =>
+      _storage.read(key: _aiKey(provider));
+
+  Future<void> writeAiApiKey(String provider, String apiKey) =>
+      _storage.write(key: _aiKey(provider), value: apiKey);
+
+  Future<void> deleteAiApiKey(String provider) =>
+      _storage.delete(key: _aiKey(provider));
 }

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/theme.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
+import '../ai/ai_settings_dialog.dart';
 import '../connections/connection_dialog.dart';
 import '../editor/workspace.dart';
 import '../navigator/navigator_pane.dart';
@@ -67,6 +68,11 @@ class _HomePageState extends ConsumerState<HomePage> {
                   tooltip: 'New SQL editor',
                   icon: const Icon(Icons.add_circle_outline_rounded),
                   onPressed: _handleNewQuery,
+                ),
+                IconButton(
+                  tooltip: 'AI assistant',
+                  icon: const Icon(Icons.auto_awesome_outlined),
+                  onPressed: () => showAiSettingsDialog(context),
                 ),
                 const _ThemePicker(),
                 const SizedBox(width: 4),
@@ -284,7 +290,11 @@ class _DesktopTopBar extends ConsumerWidget {
             onPressed: () => showConnectionDialog(context),
           ),
           const SizedBox(width: 10),
-
+          IconButton(
+            tooltip: 'AI assistant',
+            icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+            onPressed: () => showAiSettingsDialog(context),
+          ),
           const _ThemePicker(iconSize: 18),
         ],
       ),

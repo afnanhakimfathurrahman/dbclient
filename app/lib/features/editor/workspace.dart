@@ -11,6 +11,7 @@ import '../../drivers/driver.dart';
 import '../../drivers/sql_dialect.dart';
 import '../../state/workspace_tabs.dart';
 import '../../state/providers.dart';
+import '../ai/ask_ai_dialog.dart';
 import '../connections/connection_dialog.dart';
 import '../history/history_dialog.dart';
 import '../documents/collection_view.dart';
@@ -550,6 +551,53 @@ class _EditorViewState extends ConsumerState<EditorView> {
     await tab.run(statements, driver, ref.read(historyRepositoryProvider));
   }
 
+  /// Generates SQL from a description with the AI assistant and puts it
+  /// in the editor; the user runs it.
+  Future<void> _askAi() async {
+    final connections = ref.read(connectionsProvider).value ?? const [];
+    final config = connections
+        .where((c) => c.id == tab.connectionId)
+        .firstOrNull;
+    if (config == null) {
+      _snack('Choose a connection first.');
+      return;
+    }
+    // The assistant reads the schema, so it needs an open connection.
+    final driver = await connectSqlWithPrompt(context, ref, config);
+    if (driver == null || !mounted) return;
+    final failed = tab.outcomes.where((o) => o.error != null).firstOrNull;
+    final error = failed?.error;
+    final result = await showAskAiDialog(
+      context,
+      connectionId: config.id,
+      engine: config.engine,
+      defaultSchema: config.engine == DatabaseEngine.postgres
+          ? 'public'
+          : config.database,
+      currentSql: tab.currentStatement(),
+      lastError: error == null
+          ? null
+          : [
+              'Statement: ${failed!.sql}',
+              'Error: ${error.message}',
+              if (error.detail case final d? when d.isNotEmpty) 'Detail: $d',
+              if (error.hint case final h? when h.isNotEmpty) 'Hint: $h',
+            ].join('\n'),
+    );
+    if (result == null) return;
+    final (sql, mode) = result;
+    final controller = tab.controller;
+    switch (mode) {
+      case AiInsertMode.replaceAll:
+        controller.text = sql;
+      case AiInsertMode.atCursor:
+        // Keep it apart from the statement around the cursor.
+        final apart = controller.selection.isCollapsed &&
+            controller.text.trim().isNotEmpty;
+        controller.replaceSelection(apart ? '\n$sql\n' : sql);
+    }
+  }
+
   void _snack(String message) {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
@@ -620,6 +668,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
                       onRun: () => _run(script: false),
                       onRunScript: () => _run(script: true),
                       onHistory: _showHistory,
+                      onAskAi: _askAi,
                     ),
                   ),
                   SizedBox(
@@ -711,6 +760,7 @@ class _Toolbar extends ConsumerWidget {
     required this.onRun,
     required this.onRunScript,
     required this.onHistory,
+    required this.onAskAi,
   });
 
   final EditorTab tab;
@@ -720,6 +770,7 @@ class _Toolbar extends ConsumerWidget {
   final VoidCallback onRun;
   final VoidCallback onRunScript;
   final VoidCallback onHistory;
+  final VoidCallback onAskAi;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -806,6 +857,29 @@ class _Toolbar extends ConsumerWidget {
             icon: const Icon(Icons.history_rounded, size: 18),
             onPressed: onHistory,
           ),
+          // Icon only on phones, where the toolbar is tight.
+          if (MediaQuery.sizeOf(context).width < 600)
+            IconButton(
+              tooltip: 'Ask AI',
+              icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+              onPressed: tab.running ? null : onAskAi,
+            )
+          else
+            Tooltip(
+              message: 'Write SQL from a description',
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.auto_awesome_outlined, size: 16),
+                label: const Text('Ask AI', style: TextStyle(fontSize: 12)),
+                onPressed: tab.running ? null : onAskAi,
+              ),
+            ),
           const Spacer(),
 
           // Target Connection Dropdown Pill
