@@ -95,4 +95,12 @@ abstract class DocumentDriver extends DatabaseDriver {
     String collection,
     Map<String, dynamic> filter,
   );
+
+  /// Runs a database command (`{ find: … }`, `{ insert: … }`…) on
+  /// [database] and returns the server's reply. Throws [DriverException]
+  /// when the reply is not ok.
+  Future<Map<String, dynamic>> runCommand(
+    String database,
+    Map<String, dynamic> command,
+  );
 }

@@ -118,7 +118,7 @@ class MongoDriver implements DocumentDriver {
   Future<void> cancel() async {
     final busy = [
       for (final name in _busy.keys)
-        if (_dbs.remove(name) case final db?) db,
+        ?_dbs.remove(name),
     ];
     for (final db in busy) {
       try {
@@ -296,6 +296,21 @@ class MongoDriver implements DocumentDriver {
         'No document matched: it may already have been deleted.',
       );
     }
+  });
+
+  @override
+  Future<Map<String, dynamic>> runCommand(
+    String database,
+    Map<String, dynamic> command,
+  ) => _guardIn(database, () async {
+    final reply = await (await _db(database)).runCommand(command);
+    if (reply['ok'] != 1) {
+      throw DriverException(
+        '${reply['errmsg'] ?? 'Command failed'}',
+        code: '${reply['codeName'] ?? reply['code'] ?? ''}'.ifEmpty,
+      );
+    }
+    return reply;
   });
 
   void _checkWrite(mongo.WriteResult result) {

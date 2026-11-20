@@ -11,6 +11,7 @@ import '../data/secret_store.dart';
 import '../drivers/document.dart';
 import '../drivers/driver.dart';
 import '../drivers/key_value.dart';
+import '../drivers/mongodb/mongo_shell.dart' show fieldPaths;
 import '../drivers/registry.dart';
 import 'cancel_scope.dart';
 import 'workspace_tabs.dart';
@@ -326,6 +327,20 @@ final collectionsProvider =
       final driver = ref.watch(documentDriverProvider(key.$1));
       if (driver == null) return const [];
       return driver.listCollections(key.$2);
+    });
+
+/// Field paths in a sample of a collection's documents, for completion in
+/// the MongoDB editor.
+final collectionFieldsProvider =
+    FutureProvider.family<
+      List<String>,
+      (String connectionId, String database, String collection)
+    >((ref, key) async {
+      _watchEpoch(ref, key.$1);
+      final driver = ref.watch(documentDriverProvider(key.$1));
+      if (driver == null) return const [];
+      final page = await driver.find(key.$2, key.$3, limit: 50);
+      return fieldPaths(page.documents);
     });
 
 /// The key-value driver for a connection, or null if not connected or not
