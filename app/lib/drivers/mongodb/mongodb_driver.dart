@@ -303,7 +303,9 @@ class MongoDriver implements DocumentDriver {
     String database,
     Map<String, dynamic> command,
   ) => _guardIn(database, () async {
-    final reply = await (await _db(database)).runCommand(command);
+    final reply = await (await _db(
+      database,
+    )).runCommand(command.cast<String, Object>());
     if (reply['ok'] != 1) {
       throw DriverException(
         '${reply['errmsg'] ?? 'Command failed'}',

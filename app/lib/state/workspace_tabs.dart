@@ -593,11 +593,10 @@ class MongoEditorTab extends WorkspaceTab {
   MongoEditorTab({
     required this.title,
     required this.connectionId,
-    required String database,
+    required this._database,
     String initialText = '',
     this.limit = 50,
-  }) : _database = database,
-       controller = CodeLineEditingController.fromText(initialText);
+  }) : controller = CodeLineEditingController.fromText(initialText);
 
   @override
   final String title;
