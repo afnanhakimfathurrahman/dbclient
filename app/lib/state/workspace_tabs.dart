@@ -9,8 +9,10 @@ import '../drivers/document.dart';
 import '../drivers/driver.dart';
 import '../drivers/key_value.dart';
 import '../drivers/mongodb/mongo_json.dart';
+import '../drivers/mongodb/mongo_shell.dart';
 import '../drivers/redis/resp.dart';
 import '../drivers/sql_splitter.dart';
+import 'cancel_scope.dart';
 import 'data_editor.dart';
 import 'providers.dart';
 
@@ -58,7 +60,35 @@ sealed class WorkspaceTab extends ChangeNotifier {
   /// Shows a spinner on the tab while true.
   bool get busy;
 
-  Future<void> cancel() async {}
+  /// Operations [cancel] stops.
+  final _scopes = <CancelScope>{};
+
+  /// [cancel] was called and running operations are stopping.
+  bool get cancelling => _scopes.any((s) => s.cancelled);
+
+  /// Stops the tab's running operations.
+  Future<void> cancel() async {
+    if (_scopes.isEmpty) return;
+    final stopping = [for (final s in [..._scopes]) s.cancel()];
+    notifyListeners();
+    await Future.wait(stopping);
+  }
+
+  /// Runs [body] so that [cancel] can stop it; see [CancelScope].
+  Future<T> _cancellable<T>(
+    Future<T> Function(CancelScope scope) body, {
+    Future<void> Function()? stop,
+    Future<void> Function()? onAbandon,
+  }) async {
+    final scope = CancelScope(stop: stop, onAbandon: onAbandon);
+    _scopes.add(scope);
+    try {
+      return await body(scope);
+    } finally {
+      scope.end();
+      _scopes.remove(scope);
+    }
+  }
 
   bool _disposed = false;
 
@@ -93,6 +123,10 @@ class InspectorTab extends WorkspaceTab {
 
   /// How many rows the Data tab loads.
   int rowLimit;
+
+  /// The Data tab's WHERE condition (optionally with ORDER BY); empty for
+  /// the whole table. See [buildSelectSql].
+  String filter = '';
 
   @override
   String get title =>
@@ -135,7 +169,13 @@ class InspectorTab extends WorkspaceTab {
 
   bool get previewLoaded => _preview != null || _previewError != null;
 
-  Future<void> loadPreview(SqlDriver driver, String sql) async {
+  /// Loads the Data tab. [onAbandon] resets the connection if a cancelled
+  /// query doesn't stop in time.
+  Future<void> loadPreview(
+    SqlDriver driver,
+    String sql, {
+    Future<void> Function()? onAbandon,
+  }) async {
     if (_loading) return;
     _loading = true;
     _previewError = null;
@@ -144,7 +184,11 @@ class InspectorTab extends WorkspaceTab {
       // The SQL asks for one extra row to tell whether the table has more
       // than [rowLimit]. Fetching it whole and dropping it here, instead of
       // letting the row cap trip, saves the driver a server-side cancel.
-      var preview = await driver.execute(sql, maxRows: rowLimit + 1);
+      var preview = await _cancellable(
+        (scope) => scope.guard(driver.execute(sql, maxRows: rowLimit + 1)),
+        stop: driver.cancel,
+        onAbandon: onAbandon,
+      );
       if (preview.rows.length > rowLimit) {
         preview = QueryResult(
           columns: preview.columns,
@@ -275,46 +319,24 @@ class CollectionTab extends WorkspaceTab {
   void recount() => _countedFilter = null;
 
   /// Runs the current query. [resetSkip] starts again from the first page.
-  Future<void> run(DocumentDriver driver, {bool resetSkip = false}) async {
+  /// [onAbandon] resets the connection if a cancelled query doesn't stop
+  /// in time.
+  Future<void> run(
+    DocumentDriver driver, {
+    bool resetSkip = false,
+    Future<void> Function()? onAbandon,
+  }) async {
     if (_loading) return;
     if (resetSkip) skip = 0;
     _loading = true;
     _error = null;
     notifyListeners();
     try {
-      if (mode == DocumentQueryMode.find) {
-        final filterDoc = parseMongoDocument(filter.text, what: 'filter');
-        final page = await driver.find(
-          database,
-          collection,
-          filter: filterDoc,
-          projection: parseMongoDocument(projection.text, what: 'projection'),
-          sort: parseMongoDocument(sort.text, what: 'sort'),
-          skip: skip,
-          limit: limit,
-        );
-        _page = page;
-        // Counting can scan the collection, so paging through the same
-        // filter reuses the last count.
-        if (resetSkip || _total == null || _countedFilter != filter.text) {
-          _total = await driver.count(database, collection, filterDoc);
-          _countedFilter = filter.text;
-        }
-      } else {
-        final stages = parseMongo(pipeline.text);
-        if (stages is! List || stages.any((s) => s is! Map<String, dynamic>)) {
-          throw const FormatException(
-            'The pipeline must be an array of stages: [ { \$match: … } ]',
-          );
-        }
-        _page = await driver.aggregate(
-          database,
-          collection,
-          stages.cast<Map<String, dynamic>>(),
-          limit: limit,
-        );
-        _total = null;
-      }
+      await _cancellable(
+        (scope) => _query(driver, scope, resetSkip: resetSkip),
+        stop: driver.cancel,
+        onAbandon: onAbandon,
+      );
     } on FormatException catch (e) {
       _error = e.message;
     } on DriverException catch (e) {
@@ -322,6 +344,52 @@ class CollectionTab extends WorkspaceTab {
     } finally {
       _loading = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _query(
+    DocumentDriver driver,
+    CancelScope scope, {
+    required bool resetSkip,
+  }) async {
+    if (mode == DocumentQueryMode.find) {
+      final filterDoc = parseMongoDocument(filter.text, what: 'filter');
+      final page = await scope.guard(
+        driver.find(
+          database,
+          collection,
+          filter: filterDoc,
+          projection: parseMongoDocument(projection.text, what: 'projection'),
+          sort: parseMongoDocument(sort.text, what: 'sort'),
+          skip: skip,
+          limit: limit,
+        ),
+      );
+      _page = page;
+      // Counting can scan the collection, so paging through the same
+      // filter reuses the last count.
+      if (resetSkip || _total == null || _countedFilter != filter.text) {
+        _total = await scope.guard(
+          driver.count(database, collection, filterDoc),
+        );
+        _countedFilter = filter.text;
+      }
+    } else {
+      final stages = parseMongo(pipeline.text);
+      if (stages is! List || stages.any((s) => s is! Map<String, dynamic>)) {
+        throw const FormatException(
+          'The pipeline must be an array of stages: [ { \$match: … } ]',
+        );
+      }
+      _page = await scope.guard(
+        driver.aggregate(
+          database,
+          collection,
+          stages.cast<Map<String, dynamic>>(),
+          limit: limit,
+        ),
+      );
+      _total = null;
     }
   }
 
@@ -389,10 +457,16 @@ class RedisTab extends WorkspaceTab {
     scanError = null;
     notifyListeners();
     try {
-      final page = await driver.scan(
-        db,
-        pattern: pattern.text.trim(),
-        cursor: more ? _cursor : '0',
+      // Browser commands are short and their late replies harmless, so a
+      // cancel just stops waiting (no stop: nothing to reset).
+      final page = await _cancellable(
+        (scope) => scope.guard(
+          driver.scan(
+            db,
+            pattern: pattern.text.trim(),
+            cursor: more ? _cursor : '0',
+          ),
+        ),
       );
       keys = more ? [...keys, ...page.keys] : page.keys;
       _cursor = page.cursor;
@@ -418,7 +492,9 @@ class RedisTab extends WorkspaceTab {
     valueError = null;
     notifyListeners();
     try {
-      final data = await driver.read(db, key);
+      final data = await _cancellable(
+        (scope) => scope.guard(driver.read(db, key)),
+      );
       // Ignore a late reply after another key was selected.
       if (selectedKey == key) value = data;
     } on DriverException catch (e) {
@@ -485,13 +561,158 @@ class RedisTab extends WorkspaceTab {
     }
   }
 
+  /// Also aborts a console command by dropping its connection.
   @override
-  Future<void> cancel() async => _consoleDriver?.cancel();
+  Future<void> cancel() async {
+    final console = _consoleDriver;
+    await Future.wait([?console?.cancel(), super.cancel()]);
+  }
 
   @override
   void dispose() {
     pattern.dispose();
     consoleInput.dispose();
+    super.dispose();
+  }
+}
+
+/// Outcome of one statement in a MongoDB editor run.
+class MongoOutcome {
+  const MongoOutcome(this.statement, {this.result, this.error});
+
+  final String statement;
+  final MongoShellResult? result;
+
+  /// A parse error ([FormatException] message) or a [DriverException].
+  final Object? error;
+}
+
+/// A MongoDB query editor for one database: mongosh-style statements
+/// (`db.users.find({…})`) and the results of the last run.
+class MongoEditorTab extends WorkspaceTab {
+  MongoEditorTab({
+    required this.title,
+    required this.connectionId,
+    required this._database,
+    String initialText = '',
+    this.limit = 50,
+  }) : controller = CodeLineEditingController.fromText(initialText);
+
+  @override
+  final String title;
+  @override
+  final String connectionId;
+  final CodeLineEditingController controller;
+
+  /// Documents shown per cursor result, unless a statement asks for fewer.
+  int limit;
+
+  String _database;
+  String get database => _database;
+  set database(String value) {
+    if (value == _database) return;
+    _database = value;
+    notifyListeners();
+  }
+
+  bool _running = false;
+  @override
+  bool get busy => _running;
+
+  List<MongoOutcome> _outcomes = const [];
+  List<MongoOutcome> get outcomes => _outcomes;
+
+  int _selectedOutcome = 0;
+  int get selectedOutcome => _selectedOutcome;
+  set selectedOutcome(int value) {
+    _selectedOutcome = value;
+    notifyListeners();
+  }
+
+  /// The statement under the cursor, or the selection if any.
+  String? currentStatement() {
+    final selected = controller.selectedText;
+    if (selected.trim().isNotEmpty) return selected;
+    final text = controller.text;
+    return mongoStatementAt(text, _cursorOffset(text))?.text;
+  }
+
+  /// All statements in the selection, or in the whole script.
+  List<String> allStatements() {
+    final selected = controller.selectedText;
+    final source = selected.trim().isNotEmpty ? selected : controller.text;
+    return [for (final s in splitMongoScript(source)) s.text];
+  }
+
+  int _cursorOffset(String text) {
+    final position = controller.selection.extent;
+    final lines = text.split('\n');
+    var offset = 0;
+    for (var i = 0; i < position.index && i < lines.length; i++) {
+      offset += lines[i].length + 1;
+    }
+    return offset + position.offset;
+  }
+
+  /// Runs [statements] in order, stopping at the first error or on
+  /// [cancel]. [onAbandon] resets the connection if a cancelled statement
+  /// doesn't stop in time.
+  Future<void> run(
+    List<String> statements,
+    DocumentDriver driver, {
+    Future<void> Function()? onAbandon,
+  }) async {
+    if (_running || statements.isEmpty) return;
+    _running = true;
+    _outcomes = const [];
+    _selectedOutcome = 0;
+    notifyListeners();
+    final outcomes = <MongoOutcome>[];
+    try {
+      await _cancellable(
+        (scope) async {
+          for (final statement in statements) {
+            if (scope.cancelled) break;
+            try {
+              final result = await scope.guard(
+                runMongoStatement(driver, _database, statement, limit: limit),
+              );
+              if (result.database case final db?) _database = db;
+              outcomes.add(MongoOutcome(statement, result: result));
+            } on FormatException catch (e) {
+              outcomes.add(MongoOutcome(statement, error: e.message));
+              break;
+            } on DriverException catch (e) {
+              outcomes.add(MongoOutcome(statement, error: e));
+              break;
+            }
+            _outcomes = List.unmodifiable(outcomes);
+            notifyListeners();
+          }
+        },
+        stop: driver.cancel,
+        onAbandon: onAbandon,
+      );
+    } finally {
+      _outcomes = List.unmodifiable(outcomes);
+      final failed = outcomes.indexWhere((o) => o.error != null);
+      final withDocs = outcomes.lastIndexWhere(
+        (o) => o.result?.page.documents.isNotEmpty ?? false,
+      );
+      _selectedOutcome = failed != -1
+          ? failed
+          : (withDocs != -1 ? withDocs : outcomes.length - 1).clamp(
+              0,
+              outcomes.length,
+            );
+      _running = false;
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
     super.dispose();
   }
 }
@@ -534,8 +755,6 @@ class EditorTab extends WorkspaceTab {
     notifyListeners();
   }
 
-  SqlDriver? _runningOn;
-
   /// Text of the statement under the cursor, or the selection if any.
   String? currentStatement() {
     final selected = controller.selectedText;
@@ -552,47 +771,28 @@ class EditorTab extends WorkspaceTab {
     return [for (final s in splitSql(source)) s.text];
   }
 
+  /// Runs [statements] in order, stopping at the first error or on
+  /// [cancel]. [onAbandon] resets the connection if a cancelled statement
+  /// doesn't stop in time.
   Future<void> run(
     List<String> statements,
     SqlDriver driver,
-    HistoryRepository history,
-  ) async {
+    HistoryRepository history, {
+    Future<void> Function()? onAbandon,
+  }) async {
     if (_running || statements.isEmpty) return;
     _running = true;
-    _runningOn = driver;
     _outcomes = const [];
     _selectedOutcome = 0;
     notifyListeners();
 
     final outcomes = <StatementOutcome>[];
     try {
-      for (final sql in statements) {
-        final watch = Stopwatch()..start();
-        try {
-          final result = await driver.execute(sql);
-          outcomes.add(StatementOutcome(sql, result: result));
-          releaseOldRows(outcomes);
-          await history.add(
-            connectionId: connectionId,
-            sql: sql,
-            duration: result.elapsed,
-            rowCount: result.hasResultSet
-                ? result.rows.length
-                : result.affectedRows,
-          );
-        } on DriverException catch (e) {
-          outcomes.add(StatementOutcome(sql, error: e));
-          await history.add(
-            connectionId: connectionId,
-            sql: sql,
-            duration: watch.elapsed,
-            error: e.message,
-          );
-          break; // Stop the script at the first failing statement.
-        }
-        _outcomes = List.unmodifiable(outcomes);
-        notifyListeners();
-      }
+      await _cancellable(
+        (scope) => _runStatements(statements, driver, history, scope, outcomes),
+        stop: driver.cancel,
+        onAbandon: onAbandon,
+      );
     } finally {
       _outcomes = List.unmodifiable(outcomes);
       // Show the last statement that produced rows; otherwise the last one.
@@ -607,7 +807,44 @@ class EditorTab extends WorkspaceTab {
               outcomes.length,
             );
       _running = false;
-      _runningOn = null;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _runStatements(
+    List<String> statements,
+    SqlDriver driver,
+    HistoryRepository history,
+    CancelScope scope,
+    List<StatementOutcome> outcomes,
+  ) async {
+    for (final sql in statements) {
+      // A cancel between statements skips the rest of the script.
+      if (scope.cancelled) break;
+      final watch = Stopwatch()..start();
+      try {
+        final result = await scope.guard(driver.execute(sql));
+        outcomes.add(StatementOutcome(sql, result: result));
+        releaseOldRows(outcomes);
+        await history.add(
+          connectionId: connectionId,
+          sql: sql,
+          duration: result.elapsed,
+          rowCount: result.hasResultSet
+              ? result.rows.length
+              : result.affectedRows,
+        );
+      } on DriverException catch (e) {
+        outcomes.add(StatementOutcome(sql, error: e));
+        await history.add(
+          connectionId: connectionId,
+          sql: sql,
+          duration: watch.elapsed,
+          error: e.message,
+        );
+        break; // Stop the script at the first failing statement.
+      }
+      _outcomes = List.unmodifiable(outcomes);
       notifyListeners();
     }
   }
@@ -623,11 +860,6 @@ class EditorTab extends WorkspaceTab {
       if (o.rowsReleased || !(o.result?.hasResultSet ?? false)) continue;
       if (++kept > keptResultSets) outcomes[i] = o.released();
     }
-  }
-
-  @override
-  Future<void> cancel() async {
-    await _runningOn?.cancel();
   }
 
   int _cursorOffset(String text) {
@@ -680,6 +912,26 @@ class WorkspaceTabsNotifier extends Notifier<WorkspaceTabsState> {
       title: 'Script-$_counter',
       connectionId: connectionId,
       initialText: initialText,
+    );
+    state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
+    return tab;
+  }
+
+  /// Opens a MongoDB query editor on [database], starting with
+  /// [initialText] (by default a template querying [collection]).
+  MongoEditorTab openMongoEditor(
+    String connectionId,
+    String database, {
+    String? collection,
+    String? initialText,
+  }) {
+    _counter++;
+    final tab = MongoEditorTab(
+      title: 'Query-$_counter',
+      connectionId: connectionId,
+      database: database,
+      initialText: initialText ?? mongoQueryTemplate(collection),
+      limit: ref.read(dataRowLimitProvider),
     );
     state = WorkspaceTabsState(tabs: [...state.tabs, tab], activeId: tab.id);
     return tab;

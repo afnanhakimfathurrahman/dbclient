@@ -11,6 +11,7 @@ import '../../drivers/redis/redis_driver.dart';
 import '../../drivers/redis/resp.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
+import '../common/running_indicator.dart';
 import '../connections/connection_dialog.dart';
 
 /// Accent per Redis type, for the key list badges.
@@ -247,11 +248,18 @@ class _RedisViewState extends ConsumerState<RedisView> {
                 ),
               ),
               const SizedBox(width: 6),
-              IconButton(
-                tooltip: 'Scan',
-                icon: const Icon(Icons.refresh_rounded, size: 18),
-                onPressed: tab.scanning ? null : _scan,
-              ),
+              if (tab.scanning)
+                IconButton(
+                  tooltip: 'Cancel scan',
+                  icon: const Icon(Icons.stop_rounded, size: 18),
+                  onPressed: tab.cancelling ? null : tab.cancel,
+                )
+              else
+                IconButton(
+                  tooltip: 'Scan',
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  onPressed: _scan,
+                ),
               IconButton(
                 tooltip: 'New key',
                 icon: const Icon(Icons.add_rounded, size: 18),
@@ -329,7 +337,11 @@ class _RedisViewState extends ConsumerState<RedisView> {
       );
     }
     final data = tab.value;
-    if (data == null) return const Center(child: CircularProgressIndicator());
+    if (data == null) {
+      return tab.reading
+          ? Center(child: RunningIndicator(tab: tab))
+          : const SizedBox.shrink();
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

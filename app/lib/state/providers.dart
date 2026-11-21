@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show FutureProviderFamily;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,7 +11,9 @@ import '../data/secret_store.dart';
 import '../drivers/document.dart';
 import '../drivers/driver.dart';
 import '../drivers/key_value.dart';
+import '../drivers/mongodb/mongo_shell.dart' show fieldPaths;
 import '../drivers/registry.dart';
+import 'cancel_scope.dart';
 import 'workspace_tabs.dart';
 
 final appDatabaseProvider = Provider<AppDatabase>((ref) {
@@ -81,10 +85,29 @@ class SessionsNotifier extends Notifier<Map<String, Session>> {
     final connecting = Session(SessionStatus.connecting);
     state = {...state, config.id: connecting};
     final driver = createDriver(config);
+    final cancelled = _cancels[config.id] = Completer<void>();
+    final connect = driver.connect(password);
     try {
-      await driver.connect(password);
+      // [disconnect] can stop waiting: a slow or unreachable server
+      // shouldn't hold the user until the driver's own timeout.
+      await Future.any([
+        connect,
+        cancelled.future.then<void>(
+          (_) => throw const DriverException(
+            'Connection cancelled',
+            code: CancelScope.cancelledCode,
+          ),
+        ),
+      ]);
     } catch (e) {
-      await driver.close();
+      if (cancelled.isCompleted) {
+        // Close once the abandoned attempt settles.
+        unawaited(
+          connect.then((_) {}, onError: (_) {}).whenComplete(driver.close),
+        );
+      } else {
+        await driver.close();
+      }
       if (identical(state[config.id], connecting)) {
         state = {
           ...state,
@@ -92,6 +115,8 @@ class SessionsNotifier extends Notifier<Map<String, Session>> {
         };
       }
       rethrow;
+    } finally {
+      if (identical(_cancels[config.id], cancelled)) _cancels.remove(config.id);
     }
     if (!identical(state[config.id], connecting)) {
       // Disconnected meanwhile: don't bring the session back.
@@ -105,10 +130,18 @@ class SessionsNotifier extends Notifier<Map<String, Session>> {
     return driver;
   }
 
+  /// Connect attempts in flight, completed by [disconnect] to cancel them.
+  final _cancels = <String, Completer<void>>{};
+
+  bool isConnecting(String connectionId) =>
+      state[connectionId]?.status == SessionStatus.connecting;
+
   Future<void> disconnect(String connectionId) async {
     final session = state[connectionId];
     state = {...state}..remove(connectionId);
     _pending.remove(connectionId);
+    final cancel = _cancels.remove(connectionId);
+    if (cancel != null && !cancel.isCompleted) cancel.complete();
     await session?.driver?.close();
   }
 
@@ -294,6 +327,20 @@ final collectionsProvider =
       final driver = ref.watch(documentDriverProvider(key.$1));
       if (driver == null) return const [];
       return driver.listCollections(key.$2);
+    });
+
+/// Field paths in a sample of a collection's documents, for completion in
+/// the MongoDB editor.
+final collectionFieldsProvider =
+    FutureProvider.family<
+      List<String>,
+      (String connectionId, String database, String collection)
+    >((ref, key) async {
+      _watchEpoch(ref, key.$1);
+      final driver = ref.watch(documentDriverProvider(key.$1));
+      if (driver == null) return const [];
+      final page = await driver.find(key.$2, key.$3, limit: 50);
+      return fieldPaths(page.documents);
     });
 
 /// The key-value driver for a connection, or null if not connected or not

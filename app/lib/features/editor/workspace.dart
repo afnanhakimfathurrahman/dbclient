@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:re_highlight/languages/pgsql.dart';
+import 'package:re_highlight/re_highlight.dart' show Mode;
 import 'package:re_highlight/styles/atom-one-dark.dart';
 import 'package:re_highlight/styles/atom-one-light.dart';
 
@@ -11,9 +12,11 @@ import '../../drivers/driver.dart';
 import '../../drivers/sql_dialect.dart';
 import '../../state/workspace_tabs.dart';
 import '../../state/providers.dart';
+import '../ai/ask_ai_dialog.dart';
 import '../connections/connection_dialog.dart';
 import '../history/history_dialog.dart';
 import '../documents/collection_view.dart';
+import '../documents/mongo_editor_view.dart';
 import '../inspector/inspector_view.dart';
 import '../keyvalue/redis_view.dart';
 import '../results/results_view.dart';
@@ -42,6 +45,10 @@ class Workspace extends ConsumerWidget {
               tab: active,
             ),
             CollectionTab() => CollectionView(
+              key: ValueKey(active.id),
+              tab: active,
+            ),
+            MongoEditorTab() => MongoEditorView(
               key: ValueKey(active.id),
               tab: active,
             ),
@@ -195,6 +202,7 @@ class _TabChip extends StatelessWidget {
                           switch (tab) {
                             InspectorTab() => Icons.table_chart_rounded,
                             CollectionTab() => Icons.data_object_rounded,
+                            MongoEditorTab() => Icons.terminal_rounded,
                             RedisTab() => Icons.bolt_rounded,
                             EditorTab() => Icons.terminal_rounded,
                           },
@@ -506,6 +514,24 @@ class _RunIntent extends Intent {
   final bool script;
 }
 
+class _CancelIntent extends Intent {
+  const _CancelIntent();
+}
+
+/// Esc cancels the running query; while idle the key passes through to the
+/// editor (e.g. to close autocomplete).
+class _CancelAction extends Action<_CancelIntent> {
+  _CancelAction(this.tab);
+
+  final EditorTab Function() tab;
+
+  @override
+  bool isEnabled(_CancelIntent intent) => tab().running;
+
+  @override
+  Object? invoke(_CancelIntent intent) => tab().cancel();
+}
+
 /// Toolbar, SQL editor and results for one tab.
 class EditorView extends ConsumerStatefulWidget {
   const EditorView({super.key, required this.tab});
@@ -547,7 +573,61 @@ class _EditorViewState extends ConsumerState<EditorView> {
     }
     final driver = await connectSqlWithPrompt(context, ref, config);
     if (driver == null) return;
-    await tab.run(statements, driver, ref.read(historyRepositoryProvider));
+    final sessions = ref.read(sessionsProvider.notifier);
+    await tab.run(
+      statements,
+      driver,
+      ref.read(historyRepositoryProvider),
+      // A statement that ignored the cancel still holds the connection.
+      onAbandon: () => sessions.disconnect(config.id),
+    );
+  }
+
+  /// Generates SQL from a description with the AI assistant and puts it
+  /// in the editor; the user runs it.
+  Future<void> _askAi() async {
+    final connections = ref.read(connectionsProvider).value ?? const [];
+    final config = connections
+        .where((c) => c.id == tab.connectionId)
+        .firstOrNull;
+    if (config == null) {
+      _snack('Choose a connection first.');
+      return;
+    }
+    // The assistant reads the schema, so it needs an open connection.
+    final driver = await connectSqlWithPrompt(context, ref, config);
+    if (driver == null || !mounted) return;
+    final failed = tab.outcomes.where((o) => o.error != null).firstOrNull;
+    final error = failed?.error;
+    final result = await showAskAiDialog(
+      context,
+      connectionId: config.id,
+      engine: config.engine,
+      defaultSchema: config.engine == DatabaseEngine.postgres
+          ? 'public'
+          : config.database,
+      currentSql: tab.currentStatement(),
+      lastError: error == null
+          ? null
+          : [
+              'Statement: ${failed!.sql}',
+              'Error: ${error.message}',
+              if (error.detail case final d? when d.isNotEmpty) 'Detail: $d',
+              if (error.hint case final h? when h.isNotEmpty) 'Hint: $h',
+            ].join('\n'),
+    );
+    if (result == null) return;
+    final (sql, mode) = result;
+    final controller = tab.controller;
+    switch (mode) {
+      case AiInsertMode.replaceAll:
+        controller.text = sql;
+      case AiInsertMode.atCursor:
+        // Keep it apart from the statement around the cursor.
+        final apart = controller.selection.isCollapsed &&
+            controller.text.trim().isNotEmpty;
+        controller.replaceSelection(apart ? '\n$sql\n' : sql);
+    }
   }
 
   void _snack(String message) {
@@ -578,6 +658,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
         _RunIntent: CallbackAction<_RunIntent>(
           onInvoke: (intent) => _run(script: intent.script),
         ),
+        _CancelIntent: _CancelAction(() => tab),
       },
       child: Shortcuts(
         shortcuts: const {
@@ -594,6 +675,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
           SingleActivator(LogicalKeyboardKey.keyX, alt: true): _RunIntent(
             script: true,
           ),
+          SingleActivator(LogicalKeyboardKey.escape): _CancelIntent(),
         },
         child: ListenableBuilder(
           listenable: tab,
@@ -620,6 +702,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
                       onRun: () => _run(script: false),
                       onRunScript: () => _run(script: true),
                       onHistory: _showHistory,
+                      onAskAi: _askAi,
                     ),
                   ),
                   SizedBox(
@@ -629,7 +712,7 @@ class _EditorViewState extends ConsumerState<EditorView> {
                       completion: _completion,
                     ),
                   ),
-                  _HorizontalSplitter(
+                  HorizontalSplitter(
                     onDragUpdate: (dy) => setState(() {
                       _editorFraction = ((editorHeight + dy) / available).clamp(
                         0.1,
@@ -648,16 +731,17 @@ class _EditorViewState extends ConsumerState<EditorView> {
   }
 }
 
-class _HorizontalSplitter extends StatefulWidget {
-  const _HorizontalSplitter({required this.onDragUpdate});
+/// Draggable divider between an editor and its results.
+class HorizontalSplitter extends StatefulWidget {
+  const HorizontalSplitter({super.key, required this.onDragUpdate});
 
   final ValueChanged<double> onDragUpdate;
 
   @override
-  State<_HorizontalSplitter> createState() => _HorizontalSplitterState();
+  State<HorizontalSplitter> createState() => _HorizontalSplitterState();
 }
 
-class _HorizontalSplitterState extends State<_HorizontalSplitter> {
+class _HorizontalSplitterState extends State<HorizontalSplitter> {
   bool _isHovered = false;
   bool _isDragging = false;
 
@@ -711,6 +795,7 @@ class _Toolbar extends ConsumerWidget {
     required this.onRun,
     required this.onRunScript,
     required this.onHistory,
+    required this.onAskAi,
   });
 
   final EditorTab tab;
@@ -720,6 +805,7 @@ class _Toolbar extends ConsumerWidget {
   final VoidCallback onRun;
   final VoidCallback onRunScript;
   final VoidCallback onHistory;
+  final VoidCallback onAskAi;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -790,9 +876,17 @@ class _Toolbar extends ConsumerWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 visualDensity: VisualDensity.compact,
               ),
-              icon: const Icon(Icons.stop_rounded, size: 16),
-              label: const Text('Cancel', style: TextStyle(fontSize: 12)),
-              onPressed: tab.cancel,
+              icon: tab.cancelling
+                  ? const SizedBox.square(
+                      dimension: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.stop_rounded, size: 16),
+              label: Text(
+                tab.cancelling ? 'Cancelling…' : 'Cancel (Esc)',
+                style: const TextStyle(fontSize: 12),
+              ),
+              onPressed: tab.cancelling ? null : tab.cancel,
             ),
           ],
           const SizedBox(width: 8),
@@ -806,6 +900,29 @@ class _Toolbar extends ConsumerWidget {
             icon: const Icon(Icons.history_rounded, size: 18),
             onPressed: onHistory,
           ),
+          // Icon only on phones, where the toolbar is tight.
+          if (MediaQuery.sizeOf(context).width < 600)
+            IconButton(
+              tooltip: 'Ask AI',
+              icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+              onPressed: tab.running ? null : onAskAi,
+            )
+          else
+            Tooltip(
+              message: 'Write SQL from a description',
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.auto_awesome_outlined, size: 16),
+                label: const Text('Ask AI', style: TextStyle(fontSize: 12)),
+                onPressed: tab.running ? null : onAskAi,
+              ),
+            ),
           const Spacer(),
 
           // Target Connection Dropdown Pill
@@ -892,10 +1009,16 @@ class SqlEditor extends StatelessWidget {
     required this.controller,
     this.readOnly = false,
     this.completion,
+    this.languageName = 'pgsql',
+    this.language,
   });
 
   final CodeLineEditingController controller;
   final bool readOnly;
+
+  /// Highlighting; PostgreSQL SQL when [language] is null.
+  final String languageName;
+  final Mode? language;
 
   /// Autocomplete source; none for read-only views.
   final CodeAutocompletePromptsBuilder? completion;
@@ -921,7 +1044,9 @@ class SqlEditor extends StatelessWidget {
         fontFamilyFallback: monoFontFallback,
         backgroundColor: theme.colorScheme.surface,
         codeTheme: CodeHighlightTheme(
-          languages: {'pgsql': CodeHighlightThemeMode(mode: langPgsql)},
+          languages: {
+            languageName: CodeHighlightThemeMode(mode: language ?? langPgsql),
+          },
           theme: codeTheme,
         ),
       ),

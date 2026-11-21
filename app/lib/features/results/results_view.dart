@@ -25,15 +25,21 @@ class ResultsView extends StatelessWidget {
     if (outcomes.isEmpty) {
       return _Placeholder(
         child: tab.running
-            ? const Row(
+            ? Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  SizedBox.square(
+                  const SizedBox.square(
                     dimension: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
-                  SizedBox(width: 12),
-                  Text('Running…'),
+                  const SizedBox(width: 12),
+                  Text(tab.cancelling ? 'Cancelling…' : 'Running…'),
+                  const SizedBox(width: 12),
+                  TextButton.icon(
+                    icon: const Icon(Icons.stop_rounded, size: 16),
+                    label: const Text('Cancel'),
+                    onPressed: tab.cancelling ? null : tab.cancel,
+                  ),
                 ],
               )
             : const Text('Run a query to see results here.'),
@@ -131,7 +137,7 @@ class _OutcomeBar extends StatelessWidget {
                 tooltip: o.sql,
               ),
             ),
-          if (tab.running)
+          if (tab.running) ...[
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: SizedBox.square(
@@ -139,6 +145,13 @@ class _OutcomeBar extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
+            IconButton(
+              tooltip: 'Cancel the script',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.stop_rounded, size: 16),
+              onPressed: tab.cancelling ? null : tab.cancel,
+            ),
+          ],
         ],
       ),
     );
@@ -546,6 +559,9 @@ class _Placeholder extends StatelessWidget {
   }
 }
 
+typedef FilterByValue =
+    void Function(int column, Object? value, {bool exclude});
+
 /// Virtualized result grid with a pinned header row and row-number column.
 /// Also used by the inspector to show metadata tables.
 class ResultGrid extends StatefulWidget {
@@ -554,6 +570,7 @@ class ResultGrid extends StatefulWidget {
     required this.result,
     this.editor,
     this.onSelectedRowChanged,
+    this.onFilterByValue,
   });
 
   final QueryResult result;
@@ -564,6 +581,10 @@ class ResultGrid extends StatefulWidget {
 
   /// Reports the selected row as a data index (see [DataEditController]).
   final ValueChanged<int?>? onSelectedRowChanged;
+
+  /// When set, the cell menu offers to filter the data by a cell's loaded
+  /// value (`=`), or to exclude it (`<>`).
+  final FilterByValue? onFilterByValue;
 
   @override
   State<ResultGrid> createState() => _ResultGridState();
@@ -849,6 +870,11 @@ class _ResultGridState extends State<ResultGrid> {
     final staged = editor?.stagedAt(data, column) != null;
     final editable = _canEdit(row);
     final error = Theme.of(context).colorScheme.error;
+    // Added rows have nothing loaded to filter by.
+    final filterBy = data < result.rows.length ? widget.onFilterByValue : null;
+    final columnName = result.columns[column].name;
+    final shown = formatValue(_valueAt(row, column)) ?? 'NULL';
+    final short = shown.length > 24 ? '${shown.substring(0, 24)}…' : shown;
     final action = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
@@ -872,6 +898,27 @@ class _ResultGridState extends State<ResultGrid> {
         const PopupMenuItem(value: 'value', child: Text('Copy value')),
         const PopupMenuItem(value: 'row', child: Text('Copy row')),
         const PopupMenuItem(value: 'view', child: Text('View value…')),
+        if (filterBy != null) ...[
+          const PopupMenuDivider(),
+          PopupMenuItem(
+            value: 'filter',
+            child: Text(
+              _valueAt(row, column) == null
+                  ? 'Filter: $columnName IS NULL'
+                  : 'Filter: $columnName = $short',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          PopupMenuItem(
+            value: 'exclude',
+            child: Text(
+              _valueAt(row, column) == null
+                  ? 'Filter: $columnName IS NOT NULL'
+                  : 'Filter: $columnName <> $short',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
         if (editor != null) ...[
           const PopupMenuDivider(),
           const PopupMenuItem(value: 'addRow', child: Text('Add row')),
@@ -906,6 +953,10 @@ class _ResultGridState extends State<ResultGrid> {
         _copy(_rowAsTsv(row));
       case 'view':
         _showValue(row, column);
+      case 'filter':
+        filterBy?.call(column, _valueAt(row, column));
+      case 'exclude':
+        filterBy?.call(column, _valueAt(row, column), exclude: true);
     }
   }
 

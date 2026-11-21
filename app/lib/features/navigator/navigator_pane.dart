@@ -540,7 +540,12 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
       _TreeRow(
         depth: 0,
         expanded: expanded,
-        leading: _StatusDot(color: Color(config.color), session: session),
+        leading: _StatusDot(
+          color: Color(config.color),
+          session: session,
+          onCancel: () =>
+              ref.read(sessionsProvider.notifier).disconnect(config.id),
+        ),
         label: config.name,
         subtitle: '${config.engine.label} · ${config.displayAddress}',
         onTap: () => _toggleConnection(config),
@@ -550,6 +555,13 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
           icon: const Icon(Icons.more_vert, size: 18),
           onSelected: (action) => switch (action) {
             'editor' => _openEditor(config),
+            // Like mongosh, without a database in the connection: "test".
+            'mongoEditor' => ref
+                .read(workspaceTabsProvider.notifier)
+                .openMongoEditor(
+                  config.id,
+                  config.database.isEmpty ? 'test' : config.database,
+                ),
             'connect' => _toggleConnection(config),
             'disconnect' => _disconnect(config),
             'refresh' => _refresh(config),
@@ -562,6 +574,11 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
               const PopupMenuItem(
                 value: 'editor',
                 child: Text('New SQL editor'),
+              ),
+            if (config.engine.family == EngineFamily.document)
+              const PopupMenuItem(
+                value: 'mongoEditor',
+                child: Text('New query editor'),
               ),
             if (session?.status == SessionStatus.connected) ...[
               const PopupMenuItem(value: 'refresh', child: Text('Refresh')),
@@ -642,6 +659,12 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
               onTap: () => _toggle('s:${config.id}:$database'),
               onContextMenu: _menuFor([
                 (
+                  'Open query editor',
+                  () async => ref
+                      .read(workspaceTabsProvider.notifier)
+                      .openMongoEditor(config.id, database),
+                ),
+                (
                   'Create collection…',
                   () => _createCollection(config, database),
                 ),
@@ -699,12 +722,24 @@ class _NavigatorPaneState extends ConsumerState<NavigatorPane> {
                   ),
                   items: const [
                     PopupMenuItem(value: 'open', child: Text('Open')),
+                    PopupMenuItem(
+                      value: 'query',
+                      child: Text('Query in editor'),
+                    ),
                     PopupMenuItem(value: 'copy', child: Text('Copy name')),
                   ],
                 );
                 switch (action) {
                   case 'open':
                     open(info);
+                  case 'query':
+                    ref
+                        .read(workspaceTabsProvider.notifier)
+                        .openMongoEditor(
+                          config.id,
+                          database,
+                          collection: info.name,
+                        );
                   case 'copy':
                     await Clipboard.setData(ClipboardData(text: info.name));
                 }
@@ -1380,17 +1415,31 @@ class _TreeRow extends StatelessWidget {
 }
 
 class _StatusDot extends StatelessWidget {
-  const _StatusDot({required this.color, required this.session});
+  const _StatusDot({
+    required this.color,
+    required this.session,
+    required this.onCancel,
+  });
 
   final Color color;
   final Session? session;
 
+  /// Stops a connect in progress.
+  final VoidCallback onCancel;
+
   @override
   Widget build(BuildContext context) {
     if (session?.status == SessionStatus.connecting) {
-      return const SizedBox.square(
-        dimension: 12,
-        child: CircularProgressIndicator(strokeWidth: 2),
+      return Tooltip(
+        message: 'Connecting… click to cancel',
+        child: InkWell(
+          onTap: onCancel,
+          customBorder: const CircleBorder(),
+          child: const SizedBox.square(
+            dimension: 12,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
       );
     }
     final connected = session?.status == SessionStatus.connected;

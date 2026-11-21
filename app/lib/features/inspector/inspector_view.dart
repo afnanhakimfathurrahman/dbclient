@@ -13,9 +13,13 @@ import '../../drivers/sql_dialect.dart';
 import '../../drivers/sql_splitter.dart';
 import '../../drivers/value_format.dart';
 import '../../state/data_editor.dart';
+import '../../state/data_filter.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
+import '../common/running_indicator.dart';
 import '../connections/connection_dialog.dart';
+import '../editor/sql_autocomplete.dart';
+import '../editor/sql_completion.dart';
 import '../editor/workspace.dart';
 import '../results/export_dialog.dart';
 import '../results/results_view.dart';
@@ -36,9 +40,13 @@ class InspectorView extends ConsumerWidget {
   RelationKey get _key =>
       (tab.connectionId, tab.object.schema, tab.object.name);
 
-  String _selectSql(SqlDialect dialect, int limit) =>
-      'SELECT * FROM ${dialect.qualifiedName(tab.object.schema, tab.object.name)} '
-      'LIMIT $limit';
+  String _selectSql(SqlDialect dialect, int limit) => buildSelectSql(
+    dialect,
+    tab.object.schema,
+    tab.object.name,
+    filter: tab.filter,
+    limit: limit,
+  );
 
   SqlDialect _dialect(WidgetRef ref) =>
       ref.read(sqlDriverProvider(tab.connectionId))?.dialect ?? postgresDialect;
@@ -67,10 +75,13 @@ class InspectorView extends ConsumerWidget {
     if (config == null) return;
     final driver = await connectSqlWithPrompt(context, ref, config);
     if (driver != null) {
+      final sessions = ref.read(sessionsProvider.notifier);
       // One extra row tells whether the table has more than the limit.
       await tab.loadPreview(
         driver,
         _selectSql(driver.dialect, tab.rowLimit + 1),
+        // A query that ignored the cancel still holds the connection.
+        onAbandon: () => sessions.disconnect(config.id),
       );
     }
   }
@@ -296,6 +307,26 @@ class InspectorView extends ConsumerWidget {
           ref.read(dataRowLimitProvider.notifier).set(limit);
           if (context.mounted) await _loadPreview(context, ref, force: true);
           return true;
+        },
+        changeFilter: (filter) async {
+          if (!await _confirmDiscard(context)) return false;
+          tab.filter = normalizeFilter(filter);
+          if (context.mounted) await _loadPreview(context, ref, force: true);
+          return true;
+        },
+        completeFilter: (text, cursor) {
+          // Completed as the WHERE clause of the table's query, so the
+          // table's columns are offered.
+          final dialect = _dialect(ref);
+          final select =
+              'SELECT * FROM '
+              '${dialect.qualifiedName(object.schema, object.name)} WHERE ';
+          return completeSql(
+            text: '$select$text',
+            cursor: select.length + cursor,
+            catalog: ProviderSqlCatalog(ref, tab.connectionId),
+            dialect: dialect,
+          );
         },
         save: (statements) => _executeAll(context, ref, statements),
         openInEditor: (sql) => _openInEditor(ref, sql),
@@ -656,6 +687,8 @@ class _DataPage extends StatefulWidget {
     required this.load,
     required this.reload,
     required this.changeLimit,
+    required this.changeFilter,
+    required this.completeFilter,
     required this.save,
     required this.openInEditor,
     required this.dialect,
@@ -670,6 +703,13 @@ class _DataPage extends StatefulWidget {
   /// Applies a new row limit and reloads; false if not applied (unchanged,
   /// or the user kept unsaved edits).
   final Future<bool> Function(int limit) changeLimit;
+
+  /// Applies a filter (see [buildSelectSql]) and reloads; false if the user
+  /// kept unsaved edits instead.
+  final Future<bool> Function(String filter) changeFilter;
+
+  /// Completion in the filter box: columns, keywords and functions.
+  final SqlCompletion? Function(String text, int cursor) completeFilter;
   final Future<void> Function(List<String> statements) save;
   final void Function(String sql) openInEditor;
   final SqlDialect dialect;
@@ -816,20 +856,41 @@ class _DataPageState extends State<_DataPage> {
       listenable: tab,
       builder: (context, _) {
         final preview = tab.preview;
+        // The filter bar stays up on errors so a bad filter can be fixed.
+        final filterBar = _FilterBar(
+          filter: tab.filter,
+          columns: preview?.columns ?? const [],
+          dialect: widget.dialect,
+          enabled: !tab.busy,
+          onApply: widget.changeFilter,
+          complete: widget.completeFilter,
+        );
         if (tab.busy && preview == null) {
-          return const Center(child: CircularProgressIndicator());
+          return Center(child: RunningIndicator(tab: tab));
         }
         if (tab.previewError case final error?) {
-          return _CenteredMessage(error.toString(), isError: true);
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              filterBar,
+              const Divider(height: 1),
+              Expanded(
+                child: _CenteredMessage(error.toString(), isError: true),
+              ),
+            ],
+          );
         }
         if (preview == null) return const SizedBox.shrink();
         final editor = tab.editor;
+        final filtered = tab.filter.isNotEmpty;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _toolbar(editor),
             const Divider(height: 1),
-            if (tab.busy) const LinearProgressIndicator(minHeight: 2),
+            filterBar,
+            const Divider(height: 1),
+            if (tab.busy) RunningBar(tab: tab),
             Expanded(
               child: ResultGrid(
                 key: ObjectKey(preview),
@@ -837,13 +898,29 @@ class _DataPageState extends State<_DataPage> {
                 editor: editor,
                 onSelectedRowChanged: (row) =>
                     setState(() => _selectedRow = row),
+                onFilterByValue: tab.busy
+                    ? null
+                    : (int column, Object? value, {bool exclude = false}) =>
+                          widget.changeFilter(
+                            addCondition(
+                              tab.filter,
+                              valueCondition(
+                                widget.dialect,
+                                preview.columns[column],
+                                value,
+                                exclude: exclude,
+                              ),
+                            ),
+                          ),
               ),
             ),
             _Footer(
               preview.truncated
-                  ? 'First ${preview.rows.length} rows — more in the table; '
-                        'raise "Rows" or use "Query in SQL" to filter'
-                  : '${preview.rows.length} row(s)',
+                  ? 'First ${preview.rows.length} '
+                        '${filtered ? 'matching ' : ''}rows — more in the '
+                        'table; raise "Rows" or narrow the filter'
+                  : '${preview.rows.length} '
+                        '${filtered ? 'matching ' : ''}row(s)',
               trailing: preview.rows.isEmpty
                   ? null
                   : TextButton.icon(
@@ -961,6 +1038,302 @@ class _RowLimitFieldState extends State<_RowLimitField> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// DBeaver-style filter box above the Data grid: a WHERE condition, an
+/// ORDER BY, or both. Enter applies; the clear button shows the whole table.
+class _FilterBar extends StatefulWidget {
+  const _FilterBar({
+    required this.filter,
+    required this.columns,
+    required this.dialect,
+    required this.enabled,
+    required this.onApply,
+    this.complete,
+  });
+
+  /// The applied filter.
+  final String filter;
+
+  /// Completion at a cursor offset in the filter text.
+  final SqlCompletion? Function(String text, int cursor)? complete;
+
+  /// Offered for insertion at the cursor.
+  final List<ResultColumn> columns;
+  final SqlDialect dialect;
+  final bool enabled;
+  final Future<bool> Function(String filter) onApply;
+
+  @override
+  State<_FilterBar> createState() => _FilterBarState();
+}
+
+class _FilterBarState extends State<_FilterBar> {
+  late final _controller = TextEditingController(text: widget.filter);
+  final _focus = FocusNode();
+
+  @override
+  void didUpdateWidget(_FilterBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Applied elsewhere (e.g. "Filter by value"): show the new filter.
+    if (oldWidget.filter != widget.filter) _controller.text = widget.filter;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  /// Suggestions offered for [_completedFor], and how many are showing.
+  SqlCompletion? _completion;
+  TextEditingValue? _completedFor;
+  int _shownOptions = 0;
+
+  /// The last accepted suggestion and the text it gives, worked out before
+  /// the autocomplete replaces the field text.
+  (SqlSuggestion, TextEditingValue)? _accepting;
+
+  Iterable<SqlSuggestion> _options(TextEditingValue value) {
+    final cursor = value.selection.baseOffset;
+    final complete = widget.complete;
+    final completion = complete == null ||
+            !value.selection.isCollapsed ||
+            cursor < 0
+        ? null
+        : complete(value.text, cursor);
+    _completion = completion;
+    _completedFor = value;
+    final options = completion?.suggestions ?? const <SqlSuggestion>[];
+    _shownOptions = options.length;
+    return options;
+  }
+
+  /// [suggestion] in place of the word being typed.
+  TextEditingValue _accept(SqlSuggestion suggestion) {
+    final value = _completedFor ?? _controller.value;
+    final cursor = value.selection.baseOffset.clamp(0, value.text.length);
+    final start = (cursor - (_completion?.input.length ?? 0)).clamp(0, cursor);
+    final accepted = TextEditingValue(
+      text: value.text.replaceRange(start, cursor, suggestion.insert),
+      selection: TextSelection.collapsed(
+        offset: start + suggestion.insert.length,
+      ),
+    );
+    _accepting = (suggestion, accepted);
+    return accepted;
+  }
+
+  Future<void> _apply(String text) async {
+    if (!await widget.onApply(text) && mounted) {
+      _controller.text = widget.filter;
+    }
+  }
+
+  /// Inserts [text] at the cursor (replacing any selection).
+  void _insert(String text) {
+    final value = _controller.value;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final before = value.text.substring(0, selection.start);
+    final spaced = before.isEmpty || before.endsWith(' ') ? text : ' $text';
+    _controller.value = TextEditingValue(
+      text: value.text.replaceRange(selection.start, selection.end, spaced),
+      selection: TextSelection.collapsed(
+        offset: selection.start + spaced.length,
+      ),
+    );
+    _focus.requestFocus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final active = widget.filter.isNotEmpty;
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      color: active
+          ? scheme.primaryContainer.withValues(alpha: 0.35)
+          : scheme.surfaceContainerLow,
+      child: Row(
+        children: [
+          Icon(
+            Icons.filter_alt_outlined,
+            size: 16,
+            color: active ? scheme.primary : scheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: RawAutocomplete<SqlSuggestion>(
+              textEditingController: _controller,
+              focusNode: _focus,
+              optionsBuilder: _options,
+              displayStringForOption: (s) => _accept(s).text,
+              onSelected: (s) {
+                _shownOptions = 0;
+                if (_accepting case (final accepted, final value)
+                    when identical(accepted, s)) {
+                  _controller.value = value;
+                }
+              },
+              optionsViewBuilder: (context, onSelected, options) =>
+                  _SuggestionList(options: options, onSelected: onSelected),
+              fieldViewBuilder: (context, _, _, onFieldSubmitted) =>
+                  TextField(
+                    controller: _controller,
+                    focusNode: _focus,
+                    enabled: widget.enabled,
+                    style: monoStyle.copyWith(fontSize: 12),
+                    textInputAction: TextInputAction.search,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText:
+                          "WHERE condition, e.g. id > 10 AND name LIKE 'A%' "
+                          'ORDER BY id DESC',
+                      hintStyle: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      suffixIconConstraints: const BoxConstraints(
+                        minWidth: 28,
+                        minHeight: 24,
+                      ),
+                      suffixIcon: ListenableBuilder(
+                        listenable: _controller,
+                        builder: (context, _) =>
+                            _controller.text.isEmpty && !active
+                            ? const SizedBox.shrink()
+                            : IconButton(
+                                tooltip: 'Clear filter',
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                iconSize: 15,
+                                icon: const Icon(Icons.close_rounded),
+                                onPressed: widget.enabled
+                                    ? () {
+                                        _controller.clear();
+                                        if (active) _apply('');
+                                      }
+                                    : null,
+                              ),
+                      ),
+                    ),
+                    // Enter picks a suggestion while they show, else applies.
+                    onSubmitted: (text) {
+                      if (_shownOptions > 0) {
+                        onFieldSubmitted();
+                      } else {
+                        _apply(text);
+                      }
+                    },
+                  ),
+            ),
+          ),
+          if (widget.columns.isNotEmpty)
+            PopupMenuButton<String>(
+              tooltip: 'Insert column name',
+              enabled: widget.enabled,
+              icon: const Icon(Icons.view_column_outlined, size: 18),
+              iconSize: 18,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(maxHeight: 360),
+              onSelected: _insert,
+              itemBuilder: (context) => [
+                for (final c in widget.columns)
+                  PopupMenuItem(
+                    height: 32,
+                    value: widget.dialect.quoteIdent(c.name),
+                    child: Text(
+                      c.name,
+                      style: monoStyle.copyWith(fontSize: 12),
+                    ),
+                  ),
+              ],
+            ),
+          TextButton(
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              textStyle: const TextStyle(fontSize: 12),
+            ),
+            onPressed: widget.enabled ? () => _apply(_controller.text) : null,
+            child: const Text('Apply'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Popup of filter completions; the highlighted row follows the arrow
+/// keys.
+class _SuggestionList extends StatelessWidget {
+  const _SuggestionList({required this.options, required this.onSelected});
+
+  final Iterable<SqlSuggestion> options;
+  final AutocompleteOnSelected<SqlSuggestion> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final highlighted = AutocompleteHighlightedOption.of(context);
+    return Align(
+      alignment: Alignment.topLeft,
+      child: Material(
+        elevation: 4,
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(6),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 260, maxWidth: 360),
+          child: ListView.builder(
+            padding: EdgeInsets.zero,
+            shrinkWrap: true,
+            itemExtent: 28,
+            itemCount: options.length,
+            itemBuilder: (context, i) {
+              final option = options.elementAt(i);
+              return InkWell(
+                onTap: () => onSelected(option),
+                child: Container(
+                  color: i == highlighted
+                      ? scheme.primary.withValues(alpha: 0.18)
+                      : null,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  alignment: Alignment.centerLeft,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          option.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: monoStyle.copyWith(fontSize: 12),
+                        ),
+                      ),
+                      if (option.detail case final detail?)
+                        Text(
+                          detail,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
       ),
     );
   }

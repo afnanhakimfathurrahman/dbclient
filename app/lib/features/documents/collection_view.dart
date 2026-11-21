@@ -9,6 +9,7 @@ import '../../drivers/mongodb/document_diff.dart';
 import '../../drivers/mongodb/mongo_json.dart';
 import '../../state/providers.dart';
 import '../../state/workspace_tabs.dart';
+import '../common/running_indicator.dart';
 import '../connections/connection_dialog.dart';
 import '../results/results_view.dart';
 import 'document_editor_dialog.dart';
@@ -65,7 +66,16 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
 
   Future<void> _run({bool reset = false}) async {
     final driver = await _driver();
-    if (driver != null) await tab.run(driver, resetSkip: reset);
+    if (driver != null) {
+      await tab.run(driver, resetSkip: reset, onAbandon: _resetConnection());
+    }
+  }
+
+  /// Resets the connection a cancelled query still holds.
+  Future<void> Function() _resetConnection() {
+    final sessions = ref.read(sessionsProvider.notifier);
+    final id = tab.connectionId;
+    return () => sessions.disconnect(id);
   }
 
   void _snack(String message) =>
@@ -80,7 +90,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
     if (driver == null) throw const DriverException('Not connected');
     await action(driver);
     tab.recount();
-    await tab.run(driver);
+    await tab.run(driver, onAbandon: _resetConnection());
   }
 
   Future<void> _insert({Map<String, dynamic>? template}) async {
@@ -210,6 +220,22 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
             style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
           ),
           const Spacer(),
+          FilledButton.tonalIcon(
+            style: FilledButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            ),
+            icon: const Icon(Icons.terminal_rounded, size: 15),
+            label: const Text('Query editor', style: TextStyle(fontSize: 12)),
+            onPressed: () => ref
+                .read(workspaceTabsProvider.notifier)
+                .openMongoEditor(
+                  tab.connectionId,
+                  tab.database,
+                  collection: tab.collection,
+                ),
+          ),
+          const SizedBox(width: 4),
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh_rounded, size: 18),
@@ -292,11 +318,20 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
                         ),
                 ),
                 const SizedBox(width: 8),
-                FilledButton.icon(
-                  icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                  label: Text(find ? 'Find' : 'Run'),
-                  onPressed: tab.busy ? null : () => _run(reset: true),
-                ),
+                // While running, the button cancels, so a slow query can be
+                // stopped and changed.
+                if (tab.busy)
+                  FilledButton.tonalIcon(
+                    icon: const Icon(Icons.stop_rounded, size: 18),
+                    label: Text(tab.cancelling ? 'Cancelling…' : 'Cancel'),
+                    onPressed: tab.cancelling ? null : tab.cancel,
+                  )
+                else
+                  FilledButton.icon(
+                    icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                    label: Text(find ? 'Find' : 'Run'),
+                    onPressed: () => _run(reset: true),
+                  ),
               ],
             ),
             if (find) ...[
@@ -435,7 +470,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
     }
     if (page == null) {
       return tab.busy
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: RunningIndicator(tab: tab))
           : const SizedBox.shrink();
     }
     if (page.documents.isEmpty) {
@@ -453,7 +488,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
         separatorBuilder: (_, _) => const SizedBox(height: 10),
         itemBuilder: (context, i) {
           final doc = page.documents[i];
-          return _DocumentCard(
+          return DocumentCard(
             key: ObjectKey(doc),
             document: doc,
             onCopy: () => _copy(formatMongo(doc), 'Document'),
@@ -471,7 +506,7 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
       ),
       _DocView.table => ResultGrid(
         key: ObjectKey(page),
-        result: _tables[page] ??= _asTable(page),
+        result: _tables[page] ??= documentsTable(page),
       ),
       _DocView.json => SingleChildScrollView(
         padding: const EdgeInsets.all(14),
@@ -487,47 +522,47 @@ class _CollectionViewState extends ConsumerState<CollectionView> {
   /// (pages are replaced, never changed in place).
   static final _tables = Expando<QueryResult>();
   static final _json = Expando<String>();
-
-  /// Top-level fields as columns (in order of first appearance), nested
-  /// values as one-line mongosh text.
-  static QueryResult _asTable(DocumentPage page) {
-    final names = <String>{for (final doc in page.documents) ...doc.keys}
-        .take(200)
-        .toList();
-    return QueryResult(
-      columns: [
-        for (final name in names)
-          ResultColumn(
-            name: name,
-            dataType: mongoTypeName(
-              page.documents
-                  .map((d) => d[name])
-                  .firstWhere((v) => v != null, orElse: () => null),
-            ),
-          ),
-      ],
-      rows: [
-        for (final doc in page.documents)
-          [
-            for (final name in names)
-              switch (doc[name]) {
-                null => null,
-                final String s => s,
-                final num n => n,
-                final bool b => b,
-                final v => formatMongoInline(v),
-              },
-          ],
-      ],
-      affectedRows: 0,
-      elapsed: page.elapsed,
-      truncated: page.hasMore,
-    );
-  }
 }
 
-class _DocumentCard extends StatelessWidget {
-  const _DocumentCard({
+/// Top-level fields as columns (in order of first appearance), nested
+/// values as one-line mongosh text.
+QueryResult documentsTable(DocumentPage page) {
+  final names = <String>{for (final doc in page.documents) ...doc.keys}
+      .take(200)
+      .toList();
+  return QueryResult(
+    columns: [
+      for (final name in names)
+        ResultColumn(
+          name: name,
+          dataType: mongoTypeName(
+            page.documents
+                .map((d) => d[name])
+                .firstWhere((v) => v != null, orElse: () => null),
+          ),
+        ),
+    ],
+    rows: [
+      for (final doc in page.documents)
+        [
+          for (final name in names)
+            switch (doc[name]) {
+              null => null,
+              final String s => s,
+              final num n => n,
+              final bool b => b,
+              final v => formatMongoInline(v),
+            },
+        ],
+    ],
+    affectedRows: 0,
+    elapsed: page.elapsed,
+    truncated: page.hasMore,
+  );
+}
+
+class DocumentCard extends StatelessWidget {
+  const DocumentCard({
     super.key,
     required this.document,
     required this.onCopy,
